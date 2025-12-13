@@ -201,7 +201,7 @@ export default class DejaWindowExtension extends Extension {
         };
 
         // Helper to handle window changes. Re-applies restore settings if needed.
-        const handleWindowChange = (window) => {
+        const handleWindowChange = () => {
             // Re-fetch config to ensure we use latest settings (e.g. user toggled restore off)
             const currentConfig = this._getConfigForWindow(wmClass);
             if (!currentConfig) {
@@ -215,12 +215,12 @@ export default class DejaWindowExtension extends Extension {
             const needsRestore = restoreSize || restorePos || restoreMaximized;
 
             if (!handle.isRestoreApplied) {
+                handle.isRestoreApplied = true;
                 if (needsRestore) {
                     this._applySavedState(window, wmClass, restoreSize, restorePos, restoreMaximized);
                 } else {
                     this._centerWindow(window);
                 }
-                handle.isRestoreApplied = true;
             }
 
             const rect = window.get_frame_rect();
@@ -228,8 +228,8 @@ export default class DejaWindowExtension extends Extension {
         };
 
         // Connect signals for window changes
-        const idSize = window.connect('size-changed', () => handleWindowChange(window));
-        const idPos = window.connect('position-changed', () => handleWindowChange(window));
+        const idSize = window.connect('size-changed', () => handleWindowChange());
+        const idPos = window.connect('position-changed', () => handleWindowChange());
 
         // Handle window destruction to auto-cleanup
         const idUnmap = window.connect('unmanaging', () => {
