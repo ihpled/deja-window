@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="ghostty-center">
+  <schema id="org.gnome.shell.extensions.deja-window" path="/org/gnome/shell/extensions/deja-window/">
+    
+    <!-- Window Configuration (JSON List) -->
+    <!-- Format: [{"wm_class": "...", "restore_size": true, "restore_pos": true, "restore_maximized": true, "is_regex": false}, ...] -->
+    <key name="window-app-configs" type="s">
+      <default>'[
+        {"wm_class": "com.mitchellh.ghostty", "restore_size": true, "restore_pos": true, "restore_maximized": true, "is_regex": false},
+        {"wm_class": "org.gnome.TextEditor", "restore_size": false, "restore_pos": true, "restore_maximized": true, "is_regex": false}
+      ]'</default>
+      <summary>Window configurations list</summary>
+      <description>JSON containing the list of WM_CLASS and their restoration settings.</description>
+    </key>
+
+    <!-- Saved Window States (JSON Object) -->
+    <!-- Format: {"wm_class": {"w": 800, "h": 600, "x": 0, "y": 0, "maximized": false}, ...} -->
+    <key name="window-app-states" type="s">
+      <default>'{}'</default>
+      <summary>Saved window states</summary>
+      <description>JSON containing the last saved dimensions and positions for each WM_CLASS.</description>
+    </key>
+
+    <!-- Known WM Classes (Array of strings) -->
+    <key name="known-wm-classes" type="as">
+      <default>[]</default>
+      <summary>Known WM Classes</summary>
+      <description>List of WM_CLASSes seen by the extension.</description>
+    </key>
+
+  </schema>
+</schemalist>

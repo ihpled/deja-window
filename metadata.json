@@ -1,0 +1,17 @@
+{
+  "name": "Deja Window",
+  "description": "Restore window size, position, and managed state for any application.",
+  "uuid": "deja-window@mcast.gnomext.com",
+  "donations": {
+    "paypal": "MCastaldo"
+  },
+  "settings-schema": "org.gnome.shell.extensions.deja-window",
+  "shell-version": [
+    "46",
+    "47",
+    "48",
+    "49"
+  ],
+  "url": "https://github.com/ihpled/deja-window",
+  "version": 1
+}
