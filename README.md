@@ -9,7 +9,7 @@ In "vanilla" GNOME, windows typically open either centered or in a upper-left la
 1. **GNOME's Philosophy**: The design dictates that the Window Manager (Mutter) should control window placement to avoid off-screen windows or chaotic overlaps, rather than letting individual apps decide.  
 2. **Wayland Constraints**: For security and isolation, the Wayland protocol does not natively allow applications to know their absolute global coordinates on the screen. This makes it technically impossible for most apps to "remember" and restore their own position after closing.
 
-**Deja Window** bridges this gap by acting as an external memory for your window layout, forcing the desired position and size that the OS or the apps themselves cannot natively restore.
+**Deja Window** bridges this gap by acting as an external memory for your window layout, forcing the desired position and size that the OS or the apps themselves cannot natively restore. Deja Window is also very useful for all those applications (such as Ghostty) that do not adequately manage the layout of their windows in Gnome.
 
 ## **🚀 Features**
 
