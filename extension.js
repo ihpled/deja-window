@@ -36,6 +36,17 @@ export default class DejaWindowExtension extends Extension {
         this._handlerId = global.display.connect('window-created', (display, window) => {
             this._onWindowCreated(window);
         });
+
+        // Handle already existing windows (Crucial for X11 and reload)
+        // We use an idle callback to ensure the loop starts after full initialization
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            // Meta.TabList.NORMAL includes standard managed windows
+            const windows = global.display.get_tab_list(Meta.TabList.NORMAL, null);
+            for (const window of windows) {
+                this._onWindowCreated(window);
+            }
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     disable() {
@@ -133,6 +144,9 @@ export default class DejaWindowExtension extends Extension {
 
     // Helper to handle window creation. Records WM_CLASS and checks if we should manage the window.
     _onWindowCreated(window) {
+        // If we're already handling this window, exit early.
+        if (this._handles.has(window)) return;
+
         // Sometimes the WM class is not immediately available, so we check or wait for the property to change.
         if (window.get_wm_class()) {
             this._recordWmClass(window.get_wm_class());
@@ -178,30 +192,54 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window shown. Logs the window's frame rect and checks if we should restore the window.
         const handleWindowShown = () => {
-            let rect = window.get_frame_rect();
-            console.log(`[DejaWindow] Window shown ${wmClass}: ${rect.width}x${rect.height} @ ${rect.x}, ${rect.y}`);
+            // If we've already restored, avoid doing it again (loop prevention)
+            if (handle.isRestoreApplied) return;
 
-            const currentConfig = this._getConfigForWindow(wmClass);
-            if (!currentConfig) {
-                return;
-            }
+            // Use idle_add to ensure GTK/Mutter have calculated the geometries.
+            // On X11 get_frame_rect() can return 0,0 if called too early.
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                // Check if the window still exists
+                if (!window.get_workspace()) return GLib.SOURCE_REMOVE;
 
-            // Check if we should restore the window
-            const needsRestore = currentConfig.restore_size || currentConfig.restore_pos || currentConfig.restore_maximized;
+                const rect = window.get_frame_rect();
 
-            // Apply saved state if needed
-            if (!handle.isRestoreApplied) {
+                const currentConfig = this._getConfigForWindow(wmClass);
+                if (!currentConfig) return GLib.SOURCE_REMOVE;
+
                 handle.isRestoreApplied = true;
+
+                // Check if we need to restore the window
+                const needsRestore = currentConfig.restore_size || currentConfig.restore_pos || currentConfig.restore_maximized;
                 if (needsRestore) {
                     this._applySavedState(window, wmClass, currentConfig.restore_size, currentConfig.restore_pos, currentConfig.restore_maximized);
                 } else {
                     this._centerWindow(window);
                 }
-            }
+
+                return GLib.SOURCE_REMOVE;
+            });
+
+            // const currentConfig = this._getConfigForWindow(wmClass);
+            // if (!currentConfig) return
+
+            // handle.isRestoreApplied = true;
+
+            // // Check if we need to restore the window
+            // const needsRestore = currentConfig.restore_size || currentConfig.restore_pos || currentConfig.restore_maximized;
+            // if (needsRestore) {
+            //     this._applySavedState(window, wmClass, currentConfig.restore_size, currentConfig.restore_pos, currentConfig.restore_maximized);
+            // } else {
+            //     this._centerWindow(window);
+            // }
+
         };
 
         // Helper to handle window changes. Schedules a timeout to save the window's state.
         const handleWindowChange = (window) => {
+            // If we haven't finished the initial restore, don't save anything!
+            // Avoid overwriting saved state with partial coordinates during opening.
+            if (!handle.isRestoreApplied) return;
+
             const rect = window.get_frame_rect();
             if (handle.timeoutId) {
                 GLib.source_remove(handle.timeoutId);
@@ -228,20 +266,23 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window unmanaging. Saves the window's state.
         const handleWindowUnmanaging = () => {
-            const rect = window.get_frame_rect();
-            const isMaximized = window.maximized_horizontally || window.maximized_vertically;
+            // Last save before closing
+            if (handle.isRestoreApplied) {
+                const rect = window.get_frame_rect();
+                const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
-            const currentConfig = this._getConfigForWindow(wmClass);
-            if (!currentConfig) {
-                console.log('[DejaWindow] No config found for:', wmClass);
-                return;
+                const currentConfig = this._getConfigForWindow(wmClass);
+                if (!currentConfig) {
+                    console.log('[DejaWindow] No config found for:', wmClass);
+                    return;
+                }
+
+                console.log(`[DejaWindow] Window unmanaged ${wmClass}: ${rect.width}x${rect.height} @ ${rect.x}, ${rect.y}`);
+
+                this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
+                    currentConfig.restore_size, currentConfig.restore_pos,
+                    currentConfig.restore_maximized, isMaximized);
             }
-
-            console.log(`[DejaWindow] Window unmanaged ${wmClass}: ${rect.width}x${rect.height} @ ${rect.x}, ${rect.y}`);
-
-            this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
-                currentConfig.restore_size, currentConfig.restore_pos,
-                currentConfig.restore_maximized, isMaximized);
             this._cleanupWindow(window);
         };
 
@@ -253,6 +294,15 @@ export default class DejaWindowExtension extends Extension {
 
         // Store signal IDs for cleanup
         handle.signalIds.push(idShown, idUnmap, idSize, idPos);
+
+        // // CRITICAL FIX FOR X11:
+        // // If the window is already visible or mapped when we get here, the 'shown' signal 
+        // // might never fire. We manually check.
+        // // window.get_compositor_private() is a good indicator if the actor has already been created.
+        // if (window.get_compositor_private() || window.appearing) {
+        //     console.log('[DejaWindow] Window already visible or mapped:', wmClass);
+        //     handleWindowShown();
+        // }
     }
 
     // Applies the saved size and/or position, or falls back to centering if position is invalid/not requested.
@@ -269,16 +319,17 @@ export default class DejaWindowExtension extends Extension {
         // Get saved state for this window
         const state = savedStates[wmClass] || {};
 
+        // Safety checks for X11
+        if (!state) return;
+
         // Retrieve target dimensions
         let targetW = rect.width;
         let targetH = rect.height;
 
         // Restore size if requested and available
-        if (restoreSize && state.width && state.height) {
-            if (state.width > 100 && state.height > 100) {
-                targetW = state.width;
-                targetH = state.height;
-            }
+        if (restoreSize && state.width && state.height && state.width > 50 && state.height > 50) {
+            targetW = state.width;
+            targetH = state.height;
         }
 
         // Retrieve target position
@@ -367,12 +418,16 @@ export default class DejaWindowExtension extends Extension {
 
         console.log(`[DejaWindow] Applying State for ${wmClass}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
 
+        // Unset maximized first if we want to restore size/pos
+        if (window.maximized_horizontally || window.maximized_vertically) {
+            window.unmaximize(Meta.MaximizeFlags.BOTH);
+        }
+
         // Apply geometry
-        window.move_resize_frame(false, targetX, targetY, targetW, targetH);
+        window.move_resize_frame(true, targetX, targetY, targetW, targetH);
 
         // Apply Maximized State
         if (restoreMaximized && state.maximized) {
-            console.log(`[DejaWindow] Maximizing ${wmClass}`);
             window.maximize(Meta.MaximizeFlags.BOTH);
         }
     }
@@ -399,28 +454,30 @@ export default class DejaWindowExtension extends Extension {
 
         let changed = false;
 
-        // Save size if requested and not maximized
-        if (restoreSize && !isMaximized) {
-            if (w > 100 && h > 100) {
+        // If maximized, we only save the maximized flag, NOT the current coordinates (which would be full screen).
+        // Otherwise, we would overwrite the "normal" dimensions with the full-screen ones.
+        if (isMaximized) {
+            if (restoreMaximized && savedStates[wmClass].maximized !== true) {
+                savedStates[wmClass].maximized = true;
+                changed = true;
+            }
+            // We don't save w/h/x/y when maximized to preserve the "unmaximized" state.
+        } else {
+            // If not maximized, we save dimensions and position and set maximized to false
+            if (restoreMaximized && savedStates[wmClass].maximized !== false) {
+                savedStates[wmClass].maximized = false;
+                changed = true;
+            }
+
+            if (restoreSize && w > 50 && h > 50) {
                 savedStates[wmClass].width = w;
                 savedStates[wmClass].height = h;
                 changed = true;
             }
-        }
 
-        // Save position if requested and not maximized
-        if (restorePos && !isMaximized) {
-            if (x > -10000 && y > -10000) {
+            if (restorePos && x > -10000 && y > -10000) {
                 savedStates[wmClass].x = x;
                 savedStates[wmClass].y = y;
-                changed = true;
-            }
-        }
-
-        // Save maximized state if requested
-        if (restoreMaximized) {
-            if (savedStates[wmClass].maximized !== isMaximized) {
-                savedStates[wmClass].maximized = isMaximized;
                 changed = true;
             }
         }
@@ -435,12 +492,13 @@ export default class DejaWindowExtension extends Extension {
     _centerWindow(window) {
         if (!window.get_workspace()) return false;
 
-        const frameRect = window.get_frame_rect();
         const monitorIndex = window.get_monitor();
         const workspace = window.get_workspace();
         const workArea = workspace.get_work_area_for_monitor(monitorIndex);
 
         if (!workArea) return false;
+
+        const frameRect = window.get_frame_rect();
 
         const targetX = workArea.x + (workArea.width - frameRect.width) / 2;
         const targetY = workArea.y + (workArea.height - frameRect.height) / 2;
