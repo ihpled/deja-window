@@ -295,14 +295,16 @@ export default class DejaWindowExtension extends Extension {
         // Store signal IDs for cleanup
         handle.signalIds.push(idShown, idUnmap, idSize, idPos);
 
-        // // CRITICAL FIX FOR X11:
-        // // If the window is already visible or mapped when we get here, the 'shown' signal 
-        // // might never fire. We manually check.
-        // // window.get_compositor_private() is a good indicator if the actor has already been created.
-        // if (window.get_compositor_private() || window.appearing) {
-        //     console.log('[DejaWindow] Window already visible or mapped:', wmClass);
-        //     handleWindowShown();
-        // }
+        if (!Meta.is_wayland_compositor()) { // Only execute on X11
+            // CRITICAL FIX FOR X11:
+            // If the window is already visible or mapped when we get here, the 'shown' signal
+            // might never fire. We manually check.
+            // window.get_compositor_private() is a good indicator if the actor has already been created.
+            if (window.get_compositor_private() || window.appearing) {
+                console.log('[DejaWindow] Window already visible or mapped:', wmClass);
+                handleWindowShown();
+            }
+        }
     }
 
     // Applies the saved size and/or position, or falls back to centering if position is invalid/not requested.
