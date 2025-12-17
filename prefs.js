@@ -212,7 +212,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
                 // Workspace Switch
                 const workspaceRow = new Adw.ActionRow({
-                    title: 'Restore Desktop'
+                    title: 'Restore Workspace'
                 });
                 const workspaceSwitch = new Gtk.Switch({
                     active: config.restore_workspace || false,
@@ -226,8 +226,8 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
                 // Switch to Workspace Switch
                 const switchWorkspaceRow = new Adw.ActionRow({
-                    title: 'Switch to Desktop',
-                    subtitle: 'Activate the desktop where the window is restored'
+                    title: 'Switch to Workspace',
+                    subtitle: 'Activate the workspace where the window is restored'
                 });
                 const switchWorkspaceSwitch = new Gtk.Switch({
                     active: config.switch_to_workspace || false,

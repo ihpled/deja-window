@@ -1,22 +1,22 @@
 # **Deja Window**
 
-**Deja Window** is a GNOME Shell extension that gives you full control over your window geometry. It automatically restores the size, position, and maximized state of specific applications when they open.
+**Deja Window** is a GNOME Shell extension that gives you full control over your window geometry. It automatically restores the workspace, size, position, minimized and maximized state, always on top and always on visible workspace of specific applications when they open.
 
 ## **🤔 Why Deja Window?**
 
-In "vanilla" GNOME, windows typically open either centered or in a upper-left layout. This behavior stems from two main factors:
+In "vanilla" GNOME, windows typically open in the current workspace either centered or in a upper-left layout. This behavior stems from two main factors:
 
 1. **GNOME's Philosophy**: The design dictates that the Window Manager (Mutter) should control window placement to avoid off-screen windows or chaotic overlaps, rather than letting individual apps decide.  
 2. **Wayland Constraints**: For security and isolation, the Wayland protocol does not natively allow applications to know their absolute global coordinates on the screen. This makes it technically impossible for most apps to "remember" and restore their own position after closing.
 
-**Deja Window** bridges this gap by acting as an external memory for your window layout, forcing the desired position and size that the OS or the apps themselves cannot natively restore. Deja Window is also very useful for all those applications (such as Ghostty) that do not adequately manage the layout of their windows in Gnome.
+**Deja Window** bridges this gap by acting as an external memory for your window layout, forcing the desired position, size and states that the OS or the apps themselves cannot natively restore. Deja Window is also very useful for all those applications (such as Ghostty) that do not adequately manage the layout of their windows in Gnome.
 
 ## **🚀 Features**
 
-* **Persistent Layouts**: Remembers the last known position and dimensions of your windows.  
+* **Persistent Layouts**: Remembers the last known position, size (included workspace) and states (minimized and maximized, always on top and always on visible workspace) of your windows.  
 * **Granular Control**: Configure specific rules per application (via WM\_CLASS).  
 * **Flexible Matching**: Supports standard string matching and **Regular Expressions** (Regex) for advanced targeting.  
-* **Modular Restoration**: Choose to restore size, position, and maximized state independently for each app.  
+* **Modular Restoration**: Choose to restore workspace, size, position, minimized and maximized state, always on top and always on visible workspace, independently for each app.  
 * **Smart Centering**: Automatically centers windows that are configured but haven't been saved yet.  
 * **Wayland Ready**: Handles the specific timing constraints of window management on Wayland.
 
