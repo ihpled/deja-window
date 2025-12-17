@@ -135,6 +135,12 @@ export default class DejaWindowExtension extends Extension {
             handle.timeoutId = 0;
         }
 
+        // Remove workspace timeout if pending
+        if (handle.wsTimeoutId) {
+            GLib.source_remove(handle.wsTimeoutId);
+            handle.wsTimeoutId = 0;
+        }
+
         // Disconnect signals
         handle.signalIds.forEach(id => {
             try {
@@ -191,6 +197,7 @@ export default class DejaWindowExtension extends Extension {
         const handle = {
             signalIds: [],
             timeoutId: 0,
+            wsTimeoutId: 0,
             isRestoreApplied: false
         };
         this._handles.set(window, handle);
@@ -452,11 +459,20 @@ export default class DejaWindowExtension extends Extension {
 
                 // Switch to desktop if configured
                 if (config.switch_to_workspace && ws !== global.workspace_manager.get_active_workspace()) {
-                    // Slight delay to ensure the window is visually positioned before switching
-                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-                        ws.activate(global.get_current_time());
-                        return GLib.SOURCE_REMOVE;
-                    });
+                    const handle = this._handles.get(window);
+                    if (handle) {
+                        // Clear any pending timeout
+                        if (handle.wsTimeoutId) {
+                            GLib.source_remove(handle.wsTimeoutId);
+                            handle.wsTimeoutId = 0;
+                        }
+                        // Slight delay to ensure the window is visually positioned before switching
+                        handle.wsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                            ws.activate(global.get_current_time());
+                            handle.wsTimeoutId = 0;
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    }
                 }
             }
         }
