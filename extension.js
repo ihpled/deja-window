@@ -204,6 +204,7 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window shown. Logs the window's frame rect and checks if we should restore the window.
         const handleWindowShown = () => {
+            console.log('[DejaWindow] Window shown:', wmClass);
             // If we've already restored, avoid doing it again (loop prevention)
             if (handle.isRestoreApplied) return;
 
@@ -269,6 +270,7 @@ export default class DejaWindowExtension extends Extension {
                 const above = window.above;
                 const sticky = window.on_all_workspaces;
 
+                console.log(`[DejaWindow] Saving state for ${wmClass}: ${rect.x},${rect.y} ${rect.width}x${rect.height}`);
                 this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
                     currentConfig, isMaximized, workspaceIndex, minimized, above, sticky);
                 handle.timeoutId = 0;
@@ -369,70 +371,18 @@ export default class DejaWindowExtension extends Extension {
         const workArea = workspace.get_work_area_for_monitor(monitorIndex);
         if (!workArea) return;
 
-        let useCenterFallback = true;
+        // Default to centered position as fallback
+        targetX = workArea.x + (workArea.width - targetW) / 2;
+        targetY = workArea.y + (workArea.height - targetH) / 2;
 
-        // Restore position if requested and available
-        if (config.restore_pos && state.x !== undefined && state.y !== undefined) {
-            if (this._isPointInWorkArea(state.x, state.y, workArea)) {
-                targetX = state.x;
-                targetY = state.y;
-                useCenterFallback = false;
-            }
+        // Restore position if requested and valid
+        if (config.restore_pos && state.x !== undefined && state.y !== undefined && this._isPointInWorkArea(state.x, state.y, workArea)) {
+            targetX = state.x;
+            targetY = state.y;
         }
 
-        // Use center fallback if no valid position was found
-        if (useCenterFallback) {
-            targetX = workArea.x + (workArea.width - targetW) / 2;
-            targetY = workArea.y + (workArea.height - targetH) / 2;
-        }
-
-        // Iterative collision detection
-        // We only care about collision if we have a valid target position (either saved or centered)
-        // and we want to avoid perfect overlap with existing windows of the same class.
-
-        // Get all windows on the same workspace
-        const windows = workspace.list_windows();
-
-        // Filter for windows of the same class that are visible (not hidden/minimized)
-        const others = windows.filter(w => {
-            return w !== window &&
-                w.get_wm_class() === wmClass &&
-                !w.minimized &&
-                w.showing_on_its_workspace();
-        });
-
-        // Loop to find a free position
-        // We limit iterations to avoid infinite loops (e.g. if screen is full)
-        const MAX_ITERATIONS = 50;
-
-        const OFFSET_STEP = 50; // Approximate title bar height
-        const TOLERANCE = 10; // Pixel tolerance for "overlap"
-
-        for (let i = 0; i < MAX_ITERATIONS; i++) {
-            let collision = false;
-
-            for (const other of others) {
-                const otherRect = other.get_frame_rect();
-
-                // Check if 'other' window is at the current candidate position (roughly)
-                // We mainly care about the top-left corner matching, which causes the exact overlap occlusion.
-                const dist = Math.abs(otherRect.x - targetX) + Math.abs(otherRect.y - targetY);
-
-                if (dist < TOLERANCE) {
-                    collision = true;
-                    break;
-                }
-            }
-
-            if (collision) {
-                // Apply offset and try again
-                targetX += OFFSET_STEP;
-                targetY += OFFSET_STEP;
-            } else {
-                // No collision at this position, we are good
-                break;
-            }
-        }
+        // Avoid overlapping with existing windows of the same class
+        [targetX, targetY] = this._findFreePosition(workspace, window, wmClass, targetX, targetY);
 
         // Final check to ensure we didn't drift out of the work area completely
         // If we did, we might want to clamp or just accept it. 
@@ -443,13 +393,19 @@ export default class DejaWindowExtension extends Extension {
 
         console.log(`[DejaWindow] Applying State for ${wmClass}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
 
-        // Unset maximized first if we want to restore size/pos
-        if (window.maximized_horizontally || window.maximized_vertically) {
-            window.unmaximize(Meta.MaximizeFlags.BOTH);
-        }
+        const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
-        // Apply geometry
-        window.move_resize_frame(true, targetX, targetY, targetW, targetH);
+        // If the window is already maximized and we are NOT configured to restore maximized state,
+        // we should not interfere (do not unmaximize, do not apply geometry).
+        // If we ARE configured to restore maximized state, we proceed to unmaximize and apply geometry
+        // so that the "underlying" normal state is correct.
+        if (!isMaximized || config.restore_maximized) {
+            if (isMaximized) {
+                window.unmaximize(Meta.MaximizeFlags.BOTH);
+            }
+            // Apply geometry
+            window.move_resize_frame(true, targetX, targetY, targetW, targetH);
+        }
 
         // Restore Workspace
         if (config.restore_workspace && state.workspace !== undefined && state.workspace !== -1) {
@@ -617,5 +573,57 @@ export default class DejaWindowExtension extends Extension {
             x <= (area.x + area.width - 50) &&
             y >= area.y - 50 &&
             y <= (area.y + area.height - 50);
+    }
+
+    // Helper to find a free position for the window to avoid overlap
+    _findFreePosition(workspace, window, wmClass, targetX, targetY) {
+        // Iterative collision detection
+        // We only care about collision if we have a valid target position (either saved or centered)
+        // and we want to avoid perfect overlap with existing windows of the same class.
+
+        // Get all windows on the same workspace
+        const windows = workspace.list_windows();
+
+        // Filter for windows of the same class that are visible (not hidden/minimized)
+        const others = windows.filter(w => {
+            return w !== window &&
+                w.get_wm_class() === wmClass &&
+                !w.minimized &&
+                w.showing_on_its_workspace();
+        });
+
+        // Loop to find a free position
+        // We limit iterations to avoid infinite loops (e.g. if screen is full)
+        const MAX_ITERATIONS = 50;
+        const OFFSET_STEP = 50; // Approximate title bar height
+        const TOLERANCE = 10; // Pixel tolerance for "overlap"
+
+        for (let i = 0; i < MAX_ITERATIONS; i++) {
+            let collision = false;
+
+            for (const other of others) {
+                const otherRect = other.get_frame_rect();
+
+                // Check if 'other' window is at the current candidate position (roughly)
+                // We mainly care about the top-left corner matching, which causes the exact overlap occlusion.
+                const dist = Math.abs(otherRect.x - targetX) + Math.abs(otherRect.y - targetY);
+
+                if (dist < TOLERANCE) {
+                    collision = true;
+                    break;
+                }
+            }
+
+            if (collision) {
+                // Apply offset and try again
+                targetX += OFFSET_STEP;
+                targetY += OFFSET_STEP;
+            } else {
+                // No collision at this position, we are good
+                break;
+            }
+        }
+
+        return [targetX, targetY];
     }
 }
