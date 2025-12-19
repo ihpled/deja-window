@@ -2,6 +2,12 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
+const DEBUG = false;
+
+function debug(...args) {
+    if (DEBUG) console.log(...args);
+}
+
 
 /**
  * DejaWindowExtension Class
@@ -76,6 +82,7 @@ export default class DejaWindowExtension extends Extension {
         this._configs = [];
     }
 
+    // Helper to update configs from settings
     _updateConfigs() {
         try {
             const json = this._settings.get_string('window-app-configs');
@@ -89,7 +96,7 @@ export default class DejaWindowExtension extends Extension {
         for (const [window, handle] of this._handles) {
             const wmClass = window.get_wm_class();
             if (!this._getConfigForWindow(wmClass)) {
-                console.log(`[DejaWindow] No longer managing: ${wmClass}`);
+                debug(`[DejaWindow] No longer managing: ${wmClass}`);
                 this._cleanupWindow(window);
             }
         }
@@ -192,7 +199,7 @@ export default class DejaWindowExtension extends Extension {
             return; // Already registered
         }
 
-        console.log('[DejaWindow] Setup listeners for:', wmClass);
+        debug('[DejaWindow] Setup listeners for:', wmClass);
 
         const handle = {
             signalIds: [],
@@ -204,47 +211,27 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window shown. Logs the window's frame rect and checks if we should restore the window.
         const handleWindowShown = () => {
-            console.log('[DejaWindow] Window shown:', wmClass);
+            debug('[DejaWindow] Window shown:', wmClass);
             // If we've already restored, avoid doing it again (loop prevention)
             if (handle.isRestoreApplied) return;
 
-            // Use idle_add to ensure GTK/Mutter have calculated the geometries.
-            // On X11 get_frame_rect() can return 0,0 if called too early.
-            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
-                // Check if the window still exists
-                if (!window.get_workspace()) return GLib.SOURCE_REMOVE;
-
-                const rect = window.get_frame_rect();
-
-                const currentConfig = this._getConfigForWindow(wmClass);
-                if (!currentConfig) return GLib.SOURCE_REMOVE;
-
-                handle.isRestoreApplied = true;
-
-                // Check if we need to restore the window
-                const needsRestore = currentConfig.restore_size ||
-                    currentConfig.restore_pos ||
-                    currentConfig.restore_maximized ||
-                    currentConfig.restore_workspace ||
-                    currentConfig.restore_minimized ||
-                    currentConfig.restore_above ||
-                    currentConfig.restore_sticky;
-
-                if (needsRestore) {
-                    this._applySavedState(window, wmClass, currentConfig);
-                } else {
-                    this._centerWindow(window);
-                }
-
-                return GLib.SOURCE_REMOVE;
-            });
+            const currentConfig = this._getConfigForWindow(wmClass);
+            if (currentConfig) {
+                this._applySavedState(window, wmClass, currentConfig);
+            }
         };
 
-        // Helper to handle window changes. Schedules a timeout to save the window's state.
+        // Helper to handle window changes. Logs the window's frame rect and checks if we should save the window's state.
         const handleWindowChange = (window) => {
             // If we haven't finished the initial restore, don't save anything!
             // Avoid overwriting saved state with partial coordinates during opening.
-            if (!handle.isRestoreApplied) return;
+            if (!handle.isRestoreApplied) {
+                const currentConfig = this._getConfigForWindow(wmClass);
+                if (currentConfig) {
+                    this._applySavedState(window, wmClass, currentConfig);
+                }
+                return;
+            }
 
             const rect = window.get_frame_rect();
             if (handle.timeoutId) {
@@ -255,12 +242,13 @@ export default class DejaWindowExtension extends Extension {
             // Dynamically get current config to respect live changes
             const currentConfig = this._getConfigForWindow(wmClass);
             if (!currentConfig) {
-                console.log('[DejaWindow] No config found for:', wmClass);
+                debug('[DejaWindow] No config found for:', wmClass);
                 return; // Should not happen if cleanup works, but safety first
             }
 
             // Schedule a timeout to save the window's state
             handle.timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                debug('[DejaWindow] Window changed (debounced):', wmClass);
                 const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
                 // Get additional states
@@ -270,7 +258,6 @@ export default class DejaWindowExtension extends Extension {
                 const above = window.above;
                 const sticky = window.on_all_workspaces;
 
-                console.log(`[DejaWindow] Saving state for ${wmClass}: ${rect.x},${rect.y} ${rect.width}x${rect.height}`);
                 this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
                     currentConfig, isMaximized, workspaceIndex, minimized, above, sticky);
                 handle.timeoutId = 0;
@@ -280,6 +267,7 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window unmanaging. Saves the window's state.
         const handleWindowUnmanaging = () => {
+            debug('[DejaWindow] Window unmanaged:', wmClass);
             // Last save before closing
             if (handle.isRestoreApplied) {
                 const rect = window.get_frame_rect();
@@ -294,11 +282,10 @@ export default class DejaWindowExtension extends Extension {
 
                 const currentConfig = this._getConfigForWindow(wmClass);
                 if (!currentConfig) {
-                    console.log('[DejaWindow] No config found for:', wmClass);
+                    debug('[DejaWindow] No config found for:', wmClass);
                     return;
                 }
 
-                console.log(`[DejaWindow] Window unmanaged ${wmClass}: ${rect.width}x${rect.height} @ ${rect.x}, ${rect.y}`);
 
                 this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
                     currentConfig, isMaximized, workspaceIndex, minimized, above, sticky);
@@ -326,7 +313,7 @@ export default class DejaWindowExtension extends Extension {
             // might never fire. We manually check.
             // window.get_compositor_private() is a good indicator if the actor has already been created.
             if (window.get_compositor_private() || window.appearing) {
-                console.log('[DejaWindow] Window already visible or mapped:', wmClass);
+                debug('[DejaWindow] Window already visible or mapped:', wmClass);
                 handleWindowShown();
             }
         }
@@ -334,143 +321,174 @@ export default class DejaWindowExtension extends Extension {
 
     // Applies the saved size and/or position, or falls back to centering if position is invalid/not requested.
     _applySavedState(window, wmClass, config) {
-        const rect = window.get_frame_rect();
 
-        let savedStates = {};
-        try {
-            savedStates = JSON.parse(this._settings.get_string('window-app-states')) || {};
-        } catch (e) {
-            console.error('[DejaWindow] Error reading window-app-states:', e);
-        }
+        const handle = this._handles.get(window);
+        if (!handle) return;
 
-        // Get saved state for this window
-        const state = savedStates[wmClass] || {};
+        if (handle.isRestoreApplied) return;
 
-        // Safety checks for X11
-        if (!state) return;
+        // Use idle_add to ensure the window is fully ready/mapped before applying state
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            if (handle.isRestoreApplied) return GLib.SOURCE_REMOVE;
 
-        // Retrieve target dimensions
-        let targetW = rect.width;
-        let targetH = rect.height;
+            // Check if the window still exists
+            if (!window.get_workspace()) return GLib.SOURCE_REMOVE;
 
-        // Restore size if requested and available
-        if (config.restore_size && state.width && state.height && state.width > 50 && state.height > 50) {
-            targetW = state.width;
-            targetH = state.height;
-        }
+            handle.isRestoreApplied = true;
 
-        // Retrieve target position
-        let targetX = rect.x;
-        let targetY = rect.y;
+            const needsRestore = config.restore_size ||
+                config.restore_pos ||
+                config.restore_maximized ||
+                config.restore_workspace ||
+                config.restore_minimized ||
+                config.restore_above ||
+                config.restore_sticky;
 
-        const monitorIndex = window.get_monitor();
-
-        const workspace = window.get_workspace();
-        if (!workspace) return;
-
-        const workArea = workspace.get_work_area_for_monitor(monitorIndex);
-        if (!workArea) return;
-
-        // Default to centered position as fallback
-        targetX = workArea.x + (workArea.width - targetW) / 2;
-        targetY = workArea.y + (workArea.height - targetH) / 2;
-
-        // Restore position if requested and valid
-        if (config.restore_pos && state.x !== undefined && state.y !== undefined && this._isPointInWorkArea(state.x, state.y, workArea)) {
-            targetX = state.x;
-            targetY = state.y;
-        }
-
-        // Avoid overlapping with existing windows of the same class
-        [targetX, targetY] = this._findFreePosition(workspace, window, wmClass, targetX, targetY);
-
-        // Final check to ensure we didn't drift out of the work area completely
-        // If we did, we might want to clamp or just accept it. 
-        // For now, let's just clamp the top-left to be somewhat visible.
-        if (targetX > workArea.x + workArea.width - 50) targetX = workArea.x + workArea.width - 50;
-        if (targetY > workArea.y + workArea.height - 50) targetY = workArea.y + workArea.height - 50;
-
-
-        console.log(`[DejaWindow] Applying State for ${wmClass}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
-
-        const isMaximized = window.maximized_horizontally || window.maximized_vertically;
-
-        // If the window is already maximized and we are NOT configured to restore maximized state,
-        // we should not interfere (do not unmaximize, do not apply geometry).
-        // If we ARE configured to restore maximized state, we proceed to unmaximize and apply geometry
-        // so that the "underlying" normal state is correct.
-        if (!isMaximized || config.restore_maximized) {
-            if (isMaximized) {
-                window.unmaximize(Meta.MaximizeFlags.BOTH);
+            if (!needsRestore) {
+                this._centerWindow(window);
+                return GLib.SOURCE_REMOVE;
             }
-            // Apply geometry
-            window.move_resize_frame(true, targetX, targetY, targetW, targetH);
-        }
 
-        // Restore Workspace
-        if (config.restore_workspace && state.workspace !== undefined && state.workspace !== -1) {
-            const ws = global.workspace_manager.get_workspace_by_index(state.workspace);
-            if (ws) {
-                window.change_workspace(ws);
+            const rect = window.get_frame_rect();
 
-                // Switch to desktop if configured
-                if (config.switch_to_workspace && ws !== global.workspace_manager.get_active_workspace()) {
-                    const handle = this._handles.get(window);
-                    if (handle) {
-                        // Clear any pending timeout
-                        if (handle.wsTimeoutId) {
-                            GLib.source_remove(handle.wsTimeoutId);
-                            handle.wsTimeoutId = 0;
+            let savedStates = {};
+            try {
+                savedStates = JSON.parse(this._settings.get_string('window-app-states')) || {};
+            } catch (e) {
+                console.error('[DejaWindow] Error reading window-app-states:', e);
+            }
+
+            // Get saved state for this window
+            const state = savedStates[wmClass] || {};
+
+            // Safety checks for X11
+            if (!state) return GLib.SOURCE_REMOVE;
+
+            // Retrieve target dimensions
+            let targetW = rect.width;
+            let targetH = rect.height;
+
+            // Restore size if requested and available
+            if (config.restore_size && state.width && state.height && state.width > 50 && state.height > 50) {
+                targetW = state.width;
+                targetH = state.height;
+            }
+
+            // Retrieve target position
+            let targetX = rect.x;
+            let targetY = rect.y;
+
+            const monitorIndex = window.get_monitor();
+
+            const workspace = window.get_workspace();
+            if (!workspace) return GLib.SOURCE_REMOVE;
+
+            const workArea = workspace.get_work_area_for_monitor(monitorIndex);
+            if (!workArea) return GLib.SOURCE_REMOVE;
+
+            // Default to centered position as fallback
+            targetX = workArea.x + (workArea.width - targetW) / 2;
+            targetY = workArea.y + (workArea.height - targetH) / 2;
+
+            // Restore position if requested and valid
+            if (config.restore_pos && state.x !== undefined && state.y !== undefined && this._isPointInWorkArea(state.x, state.y, workArea)) {
+                targetX = state.x;
+                targetY = state.y;
+            }
+
+            // Avoid overlapping with existing windows of the same class
+            [targetX, targetY] = this._findFreePosition(workspace, window, wmClass, targetX, targetY);
+
+            // Final check to ensure we didn't drift out of the work area completely
+            // If we did, we might want to clamp or just accept it. 
+            // For now, let's just clamp the top-left to be somewhat visible.
+            if (targetX > workArea.x + workArea.width - 50) targetX = workArea.x + workArea.width - 50;
+            if (targetY > workArea.y + workArea.height - 50) targetY = workArea.y + workArea.height - 50;
+
+
+            debug(`[DejaWindow] Applying State for ${wmClass}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
+
+            const isMaximized = window.maximized_horizontally || window.maximized_vertically;
+
+            // If the window is already maximized and we are NOT configured to restore maximized state,
+            // we should not interfere (do not unmaximize, do not apply geometry).
+            // If we ARE configured to restore maximized state, we proceed to unmaximize and apply geometry
+            // so that the "underlying" normal state is correct.
+            if (!isMaximized || config.restore_maximized) {
+                if (isMaximized) {
+                    window.unmaximize(Meta.MaximizeFlags.BOTH);
+                }
+                // Apply geometry
+                window.move_resize_frame(true, targetX, targetY, targetW, targetH);
+            }
+
+            // Restore Workspace
+            if (config.restore_workspace && state.workspace !== undefined && state.workspace !== -1) {
+                const ws = global.workspace_manager.get_workspace_by_index(state.workspace);
+                if (ws) {
+                    window.change_workspace(ws);
+
+                    // Switch to desktop if configured
+                    if (config.switch_to_workspace && ws !== global.workspace_manager.get_active_workspace()) {
+                        const handle = this._handles.get(window);
+                        if (handle) {
+                            // Clear any pending timeout
+                            if (handle.wsTimeoutId) {
+                                GLib.source_remove(handle.wsTimeoutId);
+                                handle.wsTimeoutId = 0;
+                            }
+                            // Slight delay to ensure the window is visually positioned before switching
+                            handle.wsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                                ws.activate(global.get_current_time());
+                                handle.wsTimeoutId = 0;
+                                return GLib.SOURCE_REMOVE;
+                            });
                         }
-                        // Slight delay to ensure the window is visually positioned before switching
-                        handle.wsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-                            ws.activate(global.get_current_time());
-                            handle.wsTimeoutId = 0;
-                            return GLib.SOURCE_REMOVE;
-                        });
                     }
                 }
             }
-        }
 
-        // Restore Always on Visible Workspace (Sticky)
-        if (config.restore_sticky && state.sticky !== undefined) {
-            if (state.sticky) {
-                window.stick();
-            } else {
-                window.unstick();
+            // Restore Always on Visible Workspace (Sticky)
+            if (config.restore_sticky && state.sticky !== undefined) {
+                if (state.sticky) {
+                    window.stick();
+                } else {
+                    window.unstick();
+                }
             }
-        }
 
-        // Restore Always on Top (Above)
-        if (config.restore_above && state.above !== undefined) {
-            if (state.above) {
-                window.make_above();
-            } else {
-                window.unmake_above();
+            // Restore Always on Top (Above)
+            if (config.restore_above && state.above !== undefined) {
+                if (state.above) {
+                    window.make_above();
+                } else {
+                    window.unmake_above();
+                }
             }
-        }
 
-        // Restore Minimized
-        if (config.restore_minimized && state.minimized !== undefined) {
-            if (state.minimized) {
-                window.minimize();
-            } else {
-                window.unminimize();
+            // Restore Minimized
+            if (config.restore_minimized && state.minimized !== undefined) {
+                if (state.minimized) {
+                    window.minimize();
+                } else {
+                    window.unminimize();
+                }
             }
-        }
 
-        // Apply Maximized State
-        if (config.restore_maximized && state.maximized) {
-            window.maximize(Meta.MaximizeFlags.BOTH);
-        }
+            // Apply Maximized State
+            if (config.restore_maximized && state.maximized) {
+                window.maximize(Meta.MaximizeFlags.BOTH);
+            }
+
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     // Saves the current window geometry to GSettings for persistence across sessions.
     _performSave(wmClass, x, y, w, h, config, isMaximized, workspaceIndex, minimized, above, sticky) {
         if (!this._settings) return;
 
-        // console.log(`[DejaWindow] Saving State for ${wmClass}: ${w}x${h} @ ${x},${y} (Max: ${isMaximized})`);
+        debug(`[DejaWindow] Saving State for ${wmClass}: ${w}x${h} @ ${x},${y} (Max: ${isMaximized})`);
 
         let savedStates = {};
         try {
@@ -561,7 +579,7 @@ export default class DejaWindowExtension extends Extension {
         const targetX = workArea.x + (workArea.width - frameRect.width) / 2;
         const targetY = workArea.y + (workArea.height - frameRect.height) / 2;
 
-        console.log(`[DejaWindow] Centering Window: ${frameRect.width}x${frameRect.height} @ ${targetX},${targetY}`);
+        debug(`[DejaWindow] Centering Window: ${frameRect.width}x${frameRect.height} @ ${targetX},${targetY}`);
 
         window.move_frame(false, targetX, targetY);
     }
