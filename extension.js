@@ -2,7 +2,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const DEBUG = true;
+const DEBUG = false;
 
 function debug(...args) {
     if (DEBUG) console.log(...args);
