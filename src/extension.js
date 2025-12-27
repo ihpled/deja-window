@@ -78,7 +78,7 @@ export default class DejaWindowExtension extends Extension {
         if (this._probes) {
             for (const [window, ids] of this._probes) {
                 ids.forEach(id => {
-                    try { window.disconnect(id); } catch (e) { }
+                    window.disconnect(id);
                 });
             }
             this._probes.clear();
@@ -149,11 +149,7 @@ export default class DejaWindowExtension extends Extension {
             if (!valueToCheck) return false;
 
             if (c.is_regex) {
-                try {
-                    return new RegExp(c.wm_class).test(valueToCheck);
-                } catch (e) {
-                    return false;
-                }
+                return new RegExp(c.wm_class).test(valueToCheck);
             } else {
                 return c.wm_class === valueToCheck;
             }
@@ -266,7 +262,7 @@ export default class DejaWindowExtension extends Extension {
         if (!this._probes || !this._probes.has(window)) return;
         const ids = this._probes.get(window);
         ids.forEach(id => {
-            try { window.disconnect(id); } catch (e) { }
+            window.disconnect(id);
         });
         this._probes.delete(window);
     }
