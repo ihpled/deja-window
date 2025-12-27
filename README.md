@@ -65,6 +65,9 @@ Open the extension preferences to start managing your windows.
 * **Check the WM\_CLASS**: Ensure it matches exactly (or your Regex is correct).  
 * **Wayland Timing**: On Wayland, some applications may override GNOME's positioning hints during their own startup phase. Deja Window uses a delay mechanism to enforce your settings, but extremely slow apps might need a retry.  
 * **Custom Layouts**: Some applications (like certain IDEs or games) enforce their own window management logic that fights against the Window Manager. In these rare cases, the extension might not be able to force the position.
+* **Auto-maximization issue**: Sometimes, when opening large applications, the window will be automatically maximized without gaps. This might be due to a setting in Gnome which is adjustable using the dconf editor:
+/org/gnome/mutter/auto-maximize (defaults is true. If you're experiencing this issue, try setting this to false)
+The description for the setting is "Auto maximize nearly monitor sized windows". If enabled, new windows that are initially nearly the size of the monitor automatically get maximized.
 
 **How do I reset the saved positions?**
 
