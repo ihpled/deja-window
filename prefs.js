@@ -14,27 +14,53 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
      * @param {Adw.PreferencesWindow} window - The preferences window.
      */
     fillPreferencesWindow(window) {
+        // Use default height
+        window.set_default_size(700, 0);
         const settings = this.getSettings();
         const page = new Adw.PreferencesPage();
         const group = new Adw.PreferencesGroup({
             title: 'Application Configuration',
-            description: 'Add window classes (WM_CLASS) to manage.'
+            description: 'Add windows to manage.'
         });
         page.add(group);
 
         window.add(page);
 
         // -- Add New App Section --
-        const addRow = new Adw.ActionRow({
-            title: 'Add New Application',
-            subtitle: 'Enter WM_CLASS (e.g. com.mitchellh.ghostty)'
+
+        // Row 1: Match Settings
+        const matchRow = new Adw.ActionRow({
+            title: 'Match Options',
+            subtitle: 'Select matching mode and regex'
         });
-        group.add(addRow);
+        group.add(matchRow);
+
+        // Match Mode Selector
+        const modeCombo = new Gtk.ComboBoxText();
+        modeCombo.append('wm_class', 'WM_CLASS');
+        modeCombo.append('title', 'Window Title');
+        modeCombo.set_active_id('wm_class');
+        modeCombo.set_valign(Gtk.Align.CENTER);
+        matchRow.add_suffix(modeCombo);
+
+        // Regex Checkbox
+        const regexCheck = new Gtk.CheckButton({
+            label: 'Regex',
+            valign: Gtk.Align.CENTER
+        });
+        matchRow.add_suffix(regexCheck);
+
+        // Row 2: Input and Add Button
+        const inputRow = new Adw.ActionRow({
+            title: 'Window Identifier',
+            subtitle: 'Enter WM_CLASS or Window Title\nIf enabled, you can use regex like "^DevTools.*"'
+        });
+        group.add(inputRow);
 
         // Create ComboBoxText with Entry
         const combo = Gtk.ComboBoxText.new_with_entry();
         const entry = combo.get_child();
-        entry.set_placeholder_text('WM_CLASS');
+        entry.set_placeholder_text('WM_CLASS or Title');
         combo.set_hexpand(true);
         combo.set_valign(Gtk.Align.CENTER);
 
@@ -44,21 +70,14 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             combo.append(wmClass, wmClass);
         });
 
-        addRow.add_suffix(combo);
-
-        // Regex Checkbox
-        const regexCheck = new Gtk.CheckButton({
-            label: 'Regex',
-            valign: Gtk.Align.CENTER
-        });
-        addRow.add_suffix(regexCheck);
+        inputRow.add_suffix(combo);
 
         const addButton = new Gtk.Button({
             icon_name: 'list-add-symbolic',
             valign: Gtk.Align.CENTER,
             css_classes: ['suggested-action']
         });
-        addRow.add_suffix(addButton);
+        inputRow.add_suffix(addButton);
 
         // State used by functions
         let rows = [];
@@ -80,9 +99,14 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             settings.set_string('window-app-configs', JSON.stringify(configs));
         };
 
-        const updateConfig = (wmClass, key, value) => {
+        // Update helper to identify config by both wm_class and match_mode if possible.
+        // But the previous implementation assumed wm_class uniqueness.
+        // We really should pass the config index or object itself if we could, but these helpers are convenient.
+        // Let's update `updateConfig` signature.
+        const updateConfig = (wmClass, matchMode, key, value) => {
             const configs = getConfigs();
-            const config = configs.find(c => c.wm_class === wmClass);
+            // Match both class string and mode to be precise
+            const config = configs.find(c => c.wm_class === wmClass && (c.match_mode || 'wm_class') === (matchMode || 'wm_class'));
             if (config) {
                 config[key] = value;
 
@@ -99,19 +123,22 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             }
         };
 
-        const removeConfig = (wmClass) => {
+        const removeConfig = (wmClass, matchMode) => {
             let configs = getConfigs();
-            configs = configs.filter(c => c.wm_class !== wmClass);
+            // Filter out the specific entry
+            configs = configs.filter(c => !(c.wm_class === wmClass && (c.match_mode || 'wm_class') === (matchMode || 'wm_class')));
             saveConfigs(configs);
         };
 
-        const addConfig = (wmClass, isRegex = false) => {
+        const addConfig = (wmClass, isRegex = false, matchMode = 'wm_class') => {
             const configs = getConfigs();
-            if (configs.find(c => c.wm_class === wmClass)) {
+            // Check uniqueness based on both value and mode
+            if (configs.find(c => c.wm_class === wmClass && c.match_mode === matchMode)) {
                 return; // Already exists
             }
             configs.push({
-                wm_class: wmClass,
+                wm_class: wmClass, // Acts as the pattern/value
+                match_mode: matchMode,
                 restore_size: false,
                 restore_pos: false,
                 restore_maximized: false,
@@ -128,9 +155,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         const onAddClicked = () => {
             const text = entry.get_text().trim();
             if (text) {
-                addConfig(text, regexCheck.active);
+                addConfig(text, regexCheck.active, modeCombo.get_active_id());
                 entry.set_text('');
                 regexCheck.active = false;
+                // Reset mode to default if desired, or keep last selection
             }
         };
 
@@ -139,7 +167,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
         // -- List Section --
         const listGroup = new Adw.PreferencesGroup({
-            title: 'Managed Applications'
+            title: 'Managed Windows'
         });
         page.add(listGroup);
 
@@ -156,8 +184,14 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
             configs.forEach(config => {
                 let title = config.wm_class;
+                if (config.match_mode === 'title') {
+                    title += ' (Title)';
+                } else {
+                    title += ' (Class)';
+                }
+
                 if (config.is_regex) {
-                    title += ' (Regex)';
+                    title += ' [Regex]';
                 }
 
                 const isExpanded = expandedStates[title] || false;
@@ -177,7 +211,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 sizeSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_size', sizeSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_size', sizeSwitch.active);
                 });
                 sizeRow.add_suffix(sizeSwitch);
                 row.add_row(sizeRow);
@@ -191,7 +225,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 posSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_pos', posSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_pos', posSwitch.active);
                 });
                 posRow.add_suffix(posSwitch);
                 row.add_row(posRow);
@@ -205,7 +239,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 maxSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_maximized', maxSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_maximized', maxSwitch.active);
                 });
                 maxRow.add_suffix(maxSwitch);
                 row.add_row(maxRow);
@@ -219,7 +253,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 workspaceSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_workspace', workspaceSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_workspace', workspaceSwitch.active);
                 });
                 workspaceRow.add_suffix(workspaceSwitch);
                 row.add_row(workspaceRow);
@@ -234,7 +268,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 switchWorkspaceSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'switch_to_workspace', switchWorkspaceSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'switch_to_workspace', switchWorkspaceSwitch.active);
                 });
                 switchWorkspaceRow.add_suffix(switchWorkspaceSwitch);
                 row.add_row(switchWorkspaceRow);
@@ -248,7 +282,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 minimizedSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_minimized', minimizedSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_minimized', minimizedSwitch.active);
                 });
                 minimizedRow.add_suffix(minimizedSwitch);
                 row.add_row(minimizedRow);
@@ -262,7 +296,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 aboveSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_above', aboveSwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_above', aboveSwitch.active);
                 });
                 aboveRow.add_suffix(aboveSwitch);
                 row.add_row(aboveRow);
@@ -276,7 +310,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 stickySwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, 'restore_sticky', stickySwitch.active);
+                    updateConfig(config.wm_class, config.match_mode, 'restore_sticky', stickySwitch.active);
                 });
                 stickyRow.add_suffix(stickySwitch);
                 row.add_row(stickyRow);
@@ -291,7 +325,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 deleteBtn.connect('clicked', () => {
-                    removeConfig(config.wm_class);
+                    removeConfig(config.wm_class, config.match_mode);
                 });
                 deleteRow.add_suffix(deleteBtn);
                 row.add_row(deleteRow);

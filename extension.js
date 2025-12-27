@@ -2,7 +2,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const DEBUG = false;
+const DEBUG = true;
 
 function debug(...args) {
     if (DEBUG) console.log(...args);
@@ -56,6 +56,9 @@ export default class DejaWindowExtension extends Extension {
             }
             return GLib.SOURCE_REMOVE;
         });
+
+        // Initialize probes map
+        this._probes = new Map();
     }
 
     disable() {
@@ -70,6 +73,16 @@ export default class DejaWindowExtension extends Extension {
             this._cleanupWindow(window);
         }
         this._handles.clear();
+
+        // Clean up probes
+        if (this._probes) {
+            for (const [window, ids] of this._probes) {
+                ids.forEach(id => {
+                    try { window.disconnect(id); } catch (e) { }
+                });
+            }
+            this._probes.clear();
+        }
 
         this._settings = null;
         this._configs = [];
@@ -90,26 +103,41 @@ export default class DejaWindowExtension extends Extension {
             // Check validity before accessing props
             if (!window || !window.get_workspace()) continue;
 
-            const wmClass = window.get_wm_class();
-            if (!this._getConfigForWindow(wmClass)) {
-                debug(`[DejaWindow] No longer managing: ${wmClass}`);
+            // Check validity before accessing props
+            if (!window || !window.get_workspace()) continue;
+
+            if (!this._getConfigForWindow(window)) {
+                debug(`[DejaWindow] No longer managing: ${window.get_wm_class()} / ${window.get_title()}`);
                 this._cleanupWindow(window);
             }
         }
     }
 
-    // Helper to find a matching config for a given WM_CLASS
-    _getConfigForWindow(wmClass) {
-        if (!wmClass) return null;
+    // Helper to find a matching config for a given Window
+    _getConfigForWindow(window) {
+        if (!window) return null;
+
+        const wmClass = window.get_wm_class();
+        const title = window.get_title();
+
         return this._configs.find(c => {
+            const mode = c.match_mode || 'wm_class';
+            let valueToCheck = wmClass;
+
+            if (mode === 'title') {
+                valueToCheck = title;
+            }
+
+            if (!valueToCheck) return false;
+
             if (c.is_regex) {
                 try {
-                    return new RegExp(c.wm_class).test(wmClass);
+                    return new RegExp(c.wm_class).test(valueToCheck);
                 } catch (e) {
                     return false;
                 }
             } else {
-                return c.wm_class === wmClass;
+                return c.wm_class === valueToCheck;
             }
         });
     }
@@ -177,47 +205,79 @@ export default class DejaWindowExtension extends Extension {
         // If we're already handling this window, exit early.
         if (this._handles.has(window)) return;
 
-        // Sometimes the WM class is not immediately available, so we check or wait for the property to change.
+        // Record class if available immediately
         if (window.get_wm_class()) {
             this._recordWmClass(window.get_wm_class());
-            this._checkAndSetup(window);
-        } else {
-            // Using connectObject even for this temporary connection is good practice,
-            // though manual disconnect inside is fine too.
-            window.connectObject('notify::wm-class', () => {
-                // Since this is a temporary "one-shot" listener,
-                // I used window.disconnectObject(this) inside the callback.
-                // This is safe to do here because at this stage of initialization (_onWindowCreated),
-                // there are no other signals connected to this on that specific window instance.
-                window.disconnectObject(this);
-                const wmClass = window.get_wm_class();
-                if (wmClass) {
-                    this._recordWmClass(wmClass);
-                }
-                this._checkAndSetup(window);
-            }, this);
         }
+
+        // Try to setup immediately
+        if (this._checkAndSetup(window)) return;
+
+        // If not matched yet, we listen for property changes (wm-class or title)
+        // that might allow a match later (e.g. title is set after creation).
+        this._attachProbe(window);
+    }
+
+    _attachProbe(window) {
+        if (!this._probes) this._probes = new Map();
+        if (this._probes.has(window)) return;
+
+        const onPropChanged = () => {
+            if (window.get_wm_class()) {
+                this._recordWmClass(window.get_wm_class());
+            }
+
+            if (this._checkAndSetup(window)) {
+                // Window matched and setup! Remove probes.
+                this._removeProbe(window);
+            }
+        };
+
+        // We use manual connections to avoid conflict with connectObject('this') usage in managed state,
+        // and to allow precise cleanup of just these listeners.
+        const id1 = window.connect('notify::wm-class', onPropChanged);
+        const id2 = window.connect('notify::title', onPropChanged);
+
+        // Also listen for unmanaging to cleanup probes
+        const id3 = window.connect('unmanaging', () => this._removeProbe(window));
+
+        this._probes.set(window, [id1, id2, id3]);
+    }
+
+    _removeProbe(window) {
+        if (!this._probes || !this._probes.has(window)) return;
+        const ids = this._probes.get(window);
+        ids.forEach(id => {
+            try { window.disconnect(id); } catch (e) { }
+        });
+        this._probes.delete(window);
     }
 
     // Helper to check if we should manage a window. If so, sets up listeners.
     _checkAndSetup(window) {
         // Double check validity before setup
-        if (!this._isValidManagedWindow(window)) return;
-        const wmClass = window.get_wm_class();
-        if (!wmClass) return;
+        if (!this._isValidManagedWindow(window)) return false;
 
         // Check if we should manage this window
-        const config = this._getConfigForWindow(wmClass);
+        const config = this._getConfigForWindow(window);
         if (config) {
-            this._setupListeners(window, wmClass);
+            // Determine identity (what identifies this window for saving state)
+            // Use the Config Key (Regex or Class Name) to stabilize identity
+            // even if window title changes.
+            const identity = config.wm_class;
+            if (identity) {
+                this._setupListeners(window, identity);
+                return true;
+            }
         }
+        return false;
     }
 
     // Sets up specific listeners for configured windows to handle resizing, positioning, and saving state.
-    _setupListeners(window, wmClass) {
+    _setupListeners(window, identity) {
         if (this._handles.has(window)) return;
 
-        debug('[DejaWindow] Setup listeners for:', wmClass);
+        debug('[DejaWindow] Setup listeners for:', identity);
 
         const handle = {
             timeoutId: 0,               // Store timeout ID
@@ -232,10 +292,10 @@ export default class DejaWindowExtension extends Extension {
         // Function to trigger restore. Safe to call multiple times (guarded by isRestoreApplied)
         const triggerRestore = () => {
             if (handle.isRestoreApplied) return;
-            debug('[DejaWindow] Triggering restore check for:', wmClass);
-            const currentConfig = this._getConfigForWindow(wmClass);
+            const currentConfig = this._getConfigForWindow(window);
             if (currentConfig) {
-                this._applySavedState(window, wmClass, currentConfig);
+                const currentIdentity = currentConfig.wm_class;
+                this._applySavedState(window, currentIdentity, currentConfig);
             }
         };
 
@@ -243,15 +303,15 @@ export default class DejaWindowExtension extends Extension {
         // Instead of timers, we use the Window Actor state.
         const waitForActorMap = (actor) => {
             if (actor.mapped) {
-                debug('[DejaWindow] Actor already mapped:', wmClass);
+                debug('[DejaWindow] Actor already mapped:', identity);
                 triggerRestore();
             } else {
-                debug('[DejaWindow] Waiting for Actor map:', wmClass);
+                debug('[DejaWindow] Waiting for Actor map:', identity);
 
                 // Connect safely using connectObject
                 actor.connectObject('notify::mapped', () => {
                     if (actor.mapped) {
-                        debug('[DejaWindow] Actor became mapped (One-shot):', wmClass);
+                        debug('[DejaWindow] Actor became mapped (One-shot):', identity);
 
                         // Disconnect immediately to avoid repeated calls in Overview
                         // This is safe to do here because at this stage
@@ -275,12 +335,12 @@ export default class DejaWindowExtension extends Extension {
         if (actor) {
             waitForActorMap(actor);
         } else {
-            debug('[DejaWindow] Waiting for Compositor Private (Actor):', wmClass);
+            debug('[DejaWindow] Waiting for Compositor Private (Actor):', identity);
             // notify::compositor-private is a signal on the WINDOW
             window.connectObject('notify::compositor-private', () => {
                 const newActor = window.get_compositor_private();
                 if (newActor) {
-                    debug('[DejaWindow] Compositor Private (Actor) available:', wmClass);
+                    debug('[DejaWindow] Compositor Private (Actor) available:', identity);
                     waitForActorMap(newActor);
                 }
             }, this);
@@ -301,19 +361,21 @@ export default class DejaWindowExtension extends Extension {
             }
 
             // Dynamically get current config to respect live changes
-            const currentConfig = this._getConfigForWindow(wmClass);
+            const currentConfig = this._getConfigForWindow(window);
             if (!currentConfig) return;
 
             // Schedule a timeout to save the window's state
             handle.timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-                debug('[DejaWindow] Window changed (debounced):', wmClass);
+                debug('[DejaWindow] Window changed (debounced):', identity);
                 const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
                 // Get additional states
                 const workspace = window.get_workspace();
                 const workspaceIndex = workspace ? workspace.index() : -1;
 
-                this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
+                const currentIdentity = currentConfig.wm_class;
+
+                this._performSave(currentIdentity, rect.x, rect.y, rect.width, rect.height,
                     currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
 
                 handle.timeoutId = 0;
@@ -323,7 +385,7 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window unmanaging. Saves the window's state.
         const handleWindowUnmanaging = () => {
-            debug('[DejaWindow] Window unmanaged:', wmClass);
+            debug('[DejaWindow] Window unmanaged:', identity);
             // Last save before closing
             if (handle.isRestoreApplied) {
                 const rect = window.get_frame_rect();
@@ -333,10 +395,12 @@ export default class DejaWindowExtension extends Extension {
                 const workspace = window.get_workspace();
                 const workspaceIndex = workspace ? workspace.index() : -1;
 
-                const currentConfig = this._getConfigForWindow(wmClass);
+                const currentConfig = this._getConfigForWindow(window);
 
                 if (currentConfig) {
-                    this._performSave(wmClass, rect.x, rect.y, rect.width, rect.height,
+                    const currentIdentity = currentConfig.wm_class;
+
+                    this._performSave(currentIdentity, rect.x, rect.y, rect.width, rect.height,
                         currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
                 }
             }
@@ -354,7 +418,7 @@ export default class DejaWindowExtension extends Extension {
     }
 
     // Applies the saved size and/or position, or falls back to centering if position is invalid/not requested.
-    _applySavedState(window, wmClass, config) {
+    _applySavedState(window, identity, config) {
         const handle = this._handles.get(window);
         if (!handle || handle.isRestoreApplied) return;
 
@@ -372,7 +436,7 @@ export default class DejaWindowExtension extends Extension {
             // Double check actor mapping just to be absolutely sure
             const actor = window.get_compositor_private();
             if (!actor || !actor.mapped) {
-                debug(`[DejaWindow] Window ${wmClass} actor not ready in idle, skipping...`);
+                debug(`[DejaWindow] Window ${identity} actor not ready in idle, skipping...`);
                 return GLib.SOURCE_REMOVE;
             }
 
@@ -395,7 +459,8 @@ export default class DejaWindowExtension extends Extension {
             }
 
             // Get saved state for this window
-            const state = savedStates[wmClass] || {};
+            const state = savedStates[identity] || {};
+            debug('[DejaWindow] Restoring state for:', identity, state);
             // Safety checks for X11
             if (!state) return GLib.SOURCE_REMOVE;
 
@@ -432,7 +497,7 @@ export default class DejaWindowExtension extends Extension {
             }
 
             // Avoid overlapping with existing windows of the same class
-            [targetX, targetY] = this._findFreePosition(workspace, window, wmClass, targetX, targetY);
+            [targetX, targetY] = this._findFreePosition(workspace, window, identity, targetX, targetY);
 
             // Final check to ensure we didn't drift out of the work area completely
             // If we did, we might want to clamp or just accept it. 
@@ -440,7 +505,7 @@ export default class DejaWindowExtension extends Extension {
             if (targetX > workArea.x + workArea.width - 50) targetX = workArea.x + workArea.width - 50;
             if (targetY > workArea.y + workArea.height - 50) targetY = workArea.y + workArea.height - 50;
 
-            debug(`[DejaWindow] Applying State for ${wmClass}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
+            debug(`[DejaWindow] Applying State for ${identity}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
 
             const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
@@ -507,10 +572,10 @@ export default class DejaWindowExtension extends Extension {
     }
 
     // Saves the current window geometry to GSettings for persistence across sessions.
-    _performSave(wmClass, x, y, w, h, config, isMaximized, workspaceIndex, minimized, above, sticky) {
+    _performSave(identity, x, y, w, h, config, isMaximized, workspaceIndex, minimized, above, sticky) {
         if (!this._settings) return;
 
-        debug(`[DejaWindow] Saving State for ${wmClass}: ${w}x${h} @ ${x},${y}`);
+        debug(`[DejaWindow] Saving State for ${identity}: ${w}x${h} @ ${x},${y}`);
 
         let savedStates = {};
         try {
@@ -521,55 +586,55 @@ export default class DejaWindowExtension extends Extension {
         }
 
         // Initialize state for this window if it doesn't exist
-        if (!savedStates[wmClass]) {
-            savedStates[wmClass] = {};
+        if (!savedStates[identity]) {
+            savedStates[identity] = {};
         }
 
         let changed = false;
 
         // Save Workspace
-        if (config.restore_workspace && workspaceIndex !== -1 && savedStates[wmClass].workspace !== workspaceIndex) {
-            savedStates[wmClass].workspace = workspaceIndex;
+        if (config.restore_workspace && workspaceIndex !== -1 && savedStates[identity].workspace !== workspaceIndex) {
+            savedStates[identity].workspace = workspaceIndex;
             changed = true;
         }
         // Save Minimized
-        if (config.restore_minimized && savedStates[wmClass].minimized !== minimized) {
-            savedStates[wmClass].minimized = minimized;
+        if (config.restore_minimized && savedStates[identity].minimized !== minimized) {
+            savedStates[identity].minimized = minimized;
             changed = true;
         }
         // Save Above
-        if (config.restore_above && savedStates[wmClass].above !== above) {
-            savedStates[wmClass].above = above;
+        if (config.restore_above && savedStates[identity].above !== above) {
+            savedStates[identity].above = above;
             changed = true;
         }
         // Save Sticky
-        if (config.restore_sticky && savedStates[wmClass].sticky !== sticky) {
-            savedStates[wmClass].sticky = sticky;
+        if (config.restore_sticky && savedStates[identity].sticky !== sticky) {
+            savedStates[identity].sticky = sticky;
             changed = true;
         }
 
         // If maximized, we only save the maximized flag, NOT the current coordinates (which would be full screen).
         // Otherwise, we would overwrite the "normal" dimensions with the full-screen ones.
         if (isMaximized) {
-            if (config.restore_maximized && savedStates[wmClass].maximized !== true) {
-                savedStates[wmClass].maximized = true;
+            if (config.restore_maximized && savedStates[identity].maximized !== true) {
+                savedStates[identity].maximized = true;
                 changed = true;
             }
             // We don't save w/h/x/y when maximized to preserve the "unmaximized" state.
         } else {
             // If not maximized, we save dimensions and position and set maximized to false
-            if (config.restore_maximized && savedStates[wmClass].maximized !== false) {
-                savedStates[wmClass].maximized = false;
+            if (config.restore_maximized && savedStates[identity].maximized !== false) {
+                savedStates[identity].maximized = false;
                 changed = true;
             }
             if (config.restore_size && w > 50 && h > 50) {
-                savedStates[wmClass].width = w;
-                savedStates[wmClass].height = h;
+                savedStates[identity].width = w;
+                savedStates[identity].height = h;
                 changed = true;
             }
             if (config.restore_pos && x > -10000 && y > -10000) {
-                savedStates[wmClass].x = x;
-                savedStates[wmClass].y = y;
+                savedStates[identity].x = x;
+                savedStates[identity].y = y;
                 changed = true;
             }
         }
@@ -605,7 +670,7 @@ export default class DejaWindowExtension extends Extension {
     }
 
     // Helper to find a free position for the window to avoid overlap
-    _findFreePosition(workspace, window, wmClass, targetX, targetY) {
+    _findFreePosition(workspace, window, identity, targetX, targetY) {
         // Iterative collision detection
         // We only care about collision if we have a valid target position (either saved or centered)
         // and we want to avoid perfect overlap with existing windows of the same class.
@@ -616,7 +681,7 @@ export default class DejaWindowExtension extends Extension {
         // Filter for windows of the same class that are visible (not hidden/minimized)
         const others = windows.filter(w => {
             return w !== window &&
-                w.get_wm_class() === wmClass &&
+                w.get_wm_class() === identity &&
                 !w.minimized &&
                 w.showing_on_its_workspace();
         });
