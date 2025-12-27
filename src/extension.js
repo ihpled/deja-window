@@ -88,6 +88,27 @@ export default class DejaWindowExtension extends Extension {
         this._configs = [];
     }
 
+    // --- HELPER METHODS FOR API COMPATIBILITY ---
+
+    _maximizeWindow(window) {
+        // Feature detection: Check function arity (number of expected arguments)
+        // Older Meta versions expect flags (length > 0), newer versions do not (length === 0).
+        if (typeof window.maximize === 'function' && window.maximize.length > 0) {
+            window.maximize(Meta.MaximizeFlags.BOTH);
+        } else {
+            window.maximize();
+        }
+    }
+
+    _unmaximizeWindow(window) {
+        // Feature detection: Check function arity (number of expected arguments)
+        if (typeof window.unmaximize === 'function' && window.unmaximize.length > 0) {
+            window.unmaximize(Meta.MaximizeFlags.BOTH);
+        } else {
+            window.unmaximize();
+        }
+    }
+
     // Helper to update configs from settings
     _updateConfigs() {
         try {
@@ -100,9 +121,6 @@ export default class DejaWindowExtension extends Extension {
 
         // Cleanup windows that are no longer in consideration
         for (const [window, handle] of this._handles) {
-            // Check validity before accessing props
-            if (!window || !window.get_workspace()) continue;
-
             // Check validity before accessing props
             if (!window || !window.get_workspace()) continue;
 
@@ -515,7 +533,7 @@ export default class DejaWindowExtension extends Extension {
             // so that the "underlying" normal state is correct.
             if (!isMaximized || config.restore_maximized) {
                 if (isMaximized) {
-                    window.unmaximize();
+                    this._unmaximizeWindow(window);
                 }
                 // Apply geometry
                 window.move_resize_frame(true, targetX, targetY, targetW, targetH);
@@ -536,6 +554,7 @@ export default class DejaWindowExtension extends Extension {
                                 GLib.source_remove(h.wsTimeoutId);
                                 h.wsTimeoutId = 0;
                             }
+
                             // Slight delay to ensure the window is visually positioned before switching
                             h.wsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
                                 ws.activate(global.get_current_time());
@@ -564,7 +583,7 @@ export default class DejaWindowExtension extends Extension {
 
             // Apply Maximized State
             if (config.restore_maximized && state.maximized) {
-                window.maximize();
+                this._maximizeWindow(window);
             }
 
             return GLib.SOURCE_REMOVE;
