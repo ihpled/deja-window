@@ -637,11 +637,6 @@ export default class DejaWindowExtension extends Extension {
             changed = true;
         }
 
-        if (config.restore_sticky && savedStates[identity].sticky !== sticky) {
-            savedStates[identity].sticky = sticky;
-            changed = true;
-        }
-
         // If we are restoring position and the monitor is different, then save the new monitor
         if (config.restore_pos && savedStates[identity].monitor !== monitorIndex && monitorIndex !== 0) {
             savedStates[identity].monitor = monitorIndex;
