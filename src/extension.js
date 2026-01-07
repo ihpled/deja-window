@@ -480,13 +480,6 @@ export default class DejaWindowExtension extends Extension {
             // Safety checks for X11
             if (!state) return GLib.SOURCE_REMOVE;
 
-            let monitorIndex = window.get_monitor();
-            if ((config.restore_maximized || config.restore_pos) && state.monitor != monitorIndex) {
-              // Restore (Move) the window to the saved monitor
-              monitorIndex = state.monitor;
-              window.move_to_monitor(monitorIndex);
-            }
-
             const rect = window.get_frame_rect();
 
             // Retrieve target dimensions
@@ -499,9 +492,17 @@ export default class DejaWindowExtension extends Extension {
                 targetH = state.height;
             }
 
+            // Before we can determine the work area, we need to make sure the window is located on the correct monitor.
+            // So, if we are restoring position, then check and move to the saved monitor.
+            if (config.restore_pos && (state.monitor ?? 0) !== window.get_monitor()) {
+              // Restore (move) the window to the saved monitor
+              window.move_to_monitor(state.monitor);
+            }
+
             // Retrieve target position
             let targetX = rect.x;
             let targetY = rect.y;
+            const monitorIndex = window.get_monitor();
             const workspace = window.get_workspace();
             if (!workspace) return GLib.SOURCE_REMOVE;
 
@@ -636,17 +637,17 @@ export default class DejaWindowExtension extends Extension {
             changed = true;
         }
 
-        // If we are restoring either maximized or position and the monitor is different
-        // then we need to save the new monitor index
-        if ((config.restore_maximized || config.restore_pos) && savedStates[identity].monitor != monitorIndex) {
-            savedStates[identity].monitor = monitorIndex;
-            changed = true;
-        }
-
         if (config.restore_sticky && savedStates[identity].sticky !== sticky) {
             savedStates[identity].sticky = sticky;
             changed = true;
         }
+
+        // If we are restoring position and the monitor is different, then save the new monitor
+        if (config.restore_pos && savedStates[identity].monitor !== monitorIndex && monitorIndex !== 0) {
+            savedStates[identity].monitor = monitorIndex;
+            changed = true;
+        }
+
         // If maximized, we only save the maximized flag, NOT the current coordinates (which would be full screen).
         // Otherwise, we would overwrite the "normal" dimensions with the full-screen ones.
         if (isMaximized) {
