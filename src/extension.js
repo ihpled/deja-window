@@ -386,10 +386,11 @@ export default class DejaWindowExtension extends Extension {
                 // Get additional states
                 const workspace = window.get_workspace();
                 const workspaceIndex = workspace ? workspace.index() : -1;
+                const monitorIndex = window.get_monitor();
 
                 const currentIdentity = currentConfig.wm_class;
 
-                this._performSave(currentIdentity, rect.x, rect.y, rect.width, rect.height,
+                this._performSave(currentIdentity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
                     currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
 
                 handle.timeoutId = 0;
@@ -408,13 +409,14 @@ export default class DejaWindowExtension extends Extension {
                 // Get additional states
                 const workspace = window.get_workspace();
                 const workspaceIndex = workspace ? workspace.index() : -1;
+                const monitorIndex = window.get_monitor();
 
                 const currentConfig = this._getConfigForWindow(window);
 
                 if (currentConfig) {
                     const currentIdentity = currentConfig.wm_class;
 
-                    this._performSave(currentIdentity, rect.x, rect.y, rect.width, rect.height,
+                    this._performSave(currentIdentity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
                         currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
                 }
             }
@@ -488,6 +490,14 @@ export default class DejaWindowExtension extends Extension {
             if (config.restore_size && state.width && state.height && state.width > 50 && state.height > 50) {
                 targetW = state.width;
                 targetH = state.height;
+            }
+
+            // Before we can determine the work area, we need to make sure the window is located on the correct monitor.
+            // So, if we are restoring position, then check and move to the saved monitor.
+            const targetMonitor = state.monitor ?? 0;
+            if (config.restore_pos && targetMonitor !== window.get_monitor()) {
+              // Restore (move) the window to the saved monitor
+              window.move_to_monitor(targetMonitor);
             }
 
             // Retrieve target position
@@ -587,7 +597,7 @@ export default class DejaWindowExtension extends Extension {
     }
 
     // Saves the current window geometry to GSettings for persistence across sessions.
-    _performSave(identity, x, y, w, h, config, isMaximized, workspaceIndex, minimized, above, sticky) {
+    _performSave(identity, monitorIndex, x, y, w, h, config, isMaximized, workspaceIndex, minimized, above, sticky) {
         if (!this._settings) return;
 
         debug(`[DejaWindow] Saving State for ${identity}: ${w}x${h} @ ${x},${y}`);
@@ -625,6 +635,14 @@ export default class DejaWindowExtension extends Extension {
         // Save Sticky
         if (config.restore_sticky && savedStates[identity].sticky !== sticky) {
             savedStates[identity].sticky = sticky;
+            changed = true;
+        }
+
+        // If we are restoring position and the monitor is different, then save the new monitor
+        if (config.restore_pos
+              && (monitorIndex !== 0 || savedStates[identity].monitor !== undefined)
+              && savedStates[identity].monitor !== monitorIndex) {
+            savedStates[identity].monitor = monitorIndex;
             changed = true;
         }
 
