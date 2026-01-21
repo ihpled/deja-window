@@ -639,7 +639,9 @@ export default class DejaWindowExtension extends Extension {
         }
 
         // If we are restoring position and the monitor is different, then save the new monitor
-        if (config.restore_pos && savedStates[identity].monitor !== monitorIndex && monitorIndex !== 0) {
+        if (config.restore_pos
+              && (monitorIndex !== 0 || savedStates[identity].monitor !== undefined)
+              && savedStates[identity].monitor !== monitorIndex) {
             savedStates[identity].monitor = monitorIndex;
             changed = true;
         }
