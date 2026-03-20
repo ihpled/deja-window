@@ -17,6 +17,8 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
 * **Granular Control**: Configure specific rules per application (via WM_CLASS or Window Title).  
 * **Flexible Matching**: Supports standard string matching and **Regular Expressions** (Regex) for advanced targeting.  
 * **Modular Restoration**: Choose to restore workspace, size, position, minimized and maximized state, always on top and always on visible workspace, independently for each app.  
+* **Multi-Monitor Support**: Automatically detects and restores windows to the exact monitor they were previously saved on.
+* **Layout Locking**: Freeze a window's saved layout to maintain your perfect configuration, preventing accidental updates when temporarily moving or resizing windows.
 * **Smart Centering**: Automatically centers windows that are configured but haven't been saved yet.  
 * **Wayland Ready**: Handles the specific timing constraints of window management on Wayland.
 
@@ -54,8 +56,9 @@ Open the extension preferences to start managing your windows.
    * Check "Regex" if you want to match multiple windows with a pattern.  
    * Example: WM_CLASS mode with .\*ghostty.\* will match any window class containing "ghostty", Window Title mode with ^DevTools.\* will match Chrome DevTools window.  
 3. **Toggles**:  
+   * **Locked**: Freezes the currently saved layout, preventing window updates or changes from being saved.
    * **Restore Size**: App will open with the dimensions it had when last closed.  
-   * **Restore Position**: App will open at the exact X/Y coordinates it had when last closed.  
+   * **Restore Position**: App will open at the exact X/Y coordinates it had when last closed (includes restoring to the correct monitor in multi-display setups).  
    * **Restore Maximized**: App will open maximized if it was closed in that state.  
    * **Restore Workspace**: App will open on the workspace it was last closed on.  
    * **Switch to Workspace**: When the app opens, the desktop will automatically switch to that workspace.  
