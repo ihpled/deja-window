@@ -147,7 +147,8 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 restore_minimized: false,
                 restore_above: false,
                 restore_sticky: false,
-                is_regex: isRegex
+                is_regex: isRegex,
+                locked: false
             });
             saveConfigs(configs);
         };
@@ -201,6 +202,20 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     show_enable_switch: false, // We use a delete button instead
                     expanded: isExpanded
                 });
+
+                // Locked Switch
+                const lockedRow = new Adw.ActionRow({
+                    title: 'Locked - window updates/changes are not saved'
+                });
+                const lockedSwitch = new Gtk.Switch({
+                    active: config.locked || false,
+                    valign: Gtk.Align.CENTER
+                });
+                lockedSwitch.connect('notify::active', () => {
+                    updateConfig(config.wm_class, config.match_mode, 'locked', lockedSwitch.active);
+                });
+                lockedRow.add_suffix(lockedSwitch);
+                row.add_row(lockedRow);
 
                 // Size Switch
                 const sizeRow = new Adw.ActionRow({
