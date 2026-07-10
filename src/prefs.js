@@ -147,6 +147,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 restore_minimized: false,
                 restore_above: false,
                 restore_sticky: false,
+                avoid_overlap: false,
                 is_regex: isRegex,
                 locked: false
             });
@@ -329,6 +330,20 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 });
                 stickyRow.add_suffix(stickySwitch);
                 row.add_row(stickyRow);
+
+                // Avoid Overlap Switch
+                const overlapRow = new Adw.ActionRow({
+                    title: 'Avoid Overlap for Additional Windows'
+                });
+                const overlapSwitch = new Gtk.Switch({
+                    active: config.avoid_overlap || false,
+                    valign: Gtk.Align.CENTER
+                });
+                overlapSwitch.connect('notify::active', () => {
+                    updateConfig(config.wm_class, config.match_mode, 'avoid_overlap', overlapSwitch.active);
+                });
+                overlapRow.add_suffix(overlapSwitch);
+                row.add_row(overlapRow);
 
                 // Delete Button
                 const deleteRow = new Adw.ActionRow({
