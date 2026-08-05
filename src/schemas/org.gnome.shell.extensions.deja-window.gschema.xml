@@ -28,5 +28,25 @@
       <description>List of WM_CLASSes seen by the extension.</description>
     </key>
 
+    <!-- Global Default Rules (JSON Object), applied to NORMAL windows with no matching per-app config -->
+    <key name="window-global-defaults" type="s">
+      <default>'{
+        "enabled": false,
+        "restore_size": false,
+        "restore_pos": false,
+        "restore_maximized": false,
+        "restore_workspace": false,
+        "switch_to_workspace": false,
+        "restore_minimized": false,
+        "restore_above": false,
+        "restore_sticky": false,
+        "avoid_overlap": true,
+        "locked": false,
+        "excluded_wm_classes": []
+      }'</default>
+      <summary>Global default restore rules</summary>
+      <description>JSON object of restore_* flags applied to any NORMAL window without its own per-app config, plus a wm_class exclude list.</description>
+    </key>
+
   </schema>
 </schemalist>

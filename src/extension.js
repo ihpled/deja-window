@@ -34,11 +34,21 @@ export default class DejaWindowExtension extends Extension {
 
         // Cache for configurations to avoid parsing JSON on every window creation
         this._configs = [];
+        this._globalDefaults = {};
         this._updateConfigs();
+        this._updateGlobalDefaults();
 
         // Listen for config changes using connectObject
         this._settings.connectObject('changed::window-app-configs', () => {
             this._updateConfigs();
+        }, this);
+
+        // Listen for Global Defaults changes. Unlike window-app-configs, a defaults
+        // change can newly qualify already-open windows that were previously
+        // unmanaged, so also adopt those instead of waiting for a reload.
+        this._settings.connectObject('changed::window-global-defaults', () => {
+            this._updateGlobalDefaults();
+            this._adoptUnmanagedWindows();
         }, this);
 
         // Subscribe to the global 'window-created' event to detect new windows using connectObject
@@ -86,6 +96,7 @@ export default class DejaWindowExtension extends Extension {
 
         this._settings = null;
         this._configs = [];
+        this._globalDefaults = {};
     }
 
     // --- HELPER METHODS FOR API COMPATIBILITY ---
@@ -119,15 +130,44 @@ export default class DejaWindowExtension extends Extension {
             this._configs = [];
         }
 
-        // Cleanup windows that are no longer in consideration
+        this._cleanupStaleHandles();
+    }
+
+    // Helper to update Global Defaults from settings
+    _updateGlobalDefaults() {
+        try {
+            const json = this._settings.get_string('window-global-defaults');
+            this._globalDefaults = JSON.parse(json) || {};
+        } catch (e) {
+            console.error('[DejaWindow] Error parsing window-global-defaults:', e);
+            this._globalDefaults = {};
+        }
+
+        this._cleanupStaleHandles();
+    }
+
+    // Tears down any managed window that no longer resolves to an explicit
+    // config or Global Defaults (e.g. config removed, or excluded from defaults).
+    _cleanupStaleHandles() {
         for (const [window, handle] of this._handles) {
             // Check validity before accessing props
             if (!window || !window.get_workspace()) continue;
 
-            if (!this._getConfigForWindow(window)) {
+            if (!this._getEffectiveConfig(window)) {
                 debug(`[DejaWindow] No longer managing: ${window.get_wm_class()} / ${window.get_title()}`);
                 this._cleanupWindow(window);
             }
+        }
+    }
+
+    // Adopts any currently open, not-yet-managed windows. Used when Global
+    // Defaults are enabled/edited at runtime, so already-open windows don't
+    // require an extension reload to start being managed.
+    _adoptUnmanagedWindows() {
+        const windows = global.display.get_tab_list(Meta.TabList.NORMAL, null);
+        for (const window of windows) {
+            if (this._handles.has(window)) continue;
+            this._checkAndSetup(window);
         }
     }
 
@@ -154,6 +194,30 @@ export default class DejaWindowExtension extends Extension {
                 return c.wm_class === valueToCheck;
             }
         });
+    }
+
+    // Resolves the config and identity that should govern a window: an explicit
+    // per-app config always wins; otherwise, if Global Defaults are enabled, the
+    // window is NORMAL, and its wm_class isn't excluded, fall back to the Global
+    // Defaults object. Identity is always the window's own live wm_class in the
+    // fallback case (never a fixed value on the defaults object itself), so each
+    // app still gets its own slot in window-app-states instead of colliding.
+    _getEffectiveConfig(window) {
+        if (!window) return null;
+
+        const explicit = this._getConfigForWindow(window);
+        if (explicit) {
+            return { config: explicit, identity: explicit.wm_class };
+        }
+
+        if (!this._globalDefaults.enabled) return null;
+        if (window.get_window_type() !== Meta.WindowType.NORMAL) return null;
+
+        const wmClass = window.get_wm_class();
+        if (!wmClass) return null;
+        if ((this._globalDefaults.excluded_wm_classes || []).includes(wmClass)) return null;
+
+        return { config: this._globalDefaults, identity: wmClass };
     }
 
     // Helper to record a new WM_CLASS in the known-wm-classes setting
@@ -272,17 +336,11 @@ export default class DejaWindowExtension extends Extension {
         // Double check validity before setup
         if (!this._isValidManagedWindow(window)) return false;
 
-        // Check if we should manage this window
-        const config = this._getConfigForWindow(window);
-        if (config) {
-            // Determine identity (what identifies this window for saving state)
-            // Use the Config Key (Regex or Class Name) to stabilize identity
-            // even if window title changes.
-            const identity = config.wm_class;
-            if (identity) {
-                this._setupListeners(window, identity);
-                return true;
-            }
+        // Check if we should manage this window (explicit config or Global Defaults)
+        const effective = this._getEffectiveConfig(window);
+        if (effective && effective.identity) {
+            this._setupListeners(window, effective.identity);
+            return true;
         }
         return false;
     }
@@ -306,10 +364,9 @@ export default class DejaWindowExtension extends Extension {
         // Function to trigger restore. Safe to call multiple times (guarded by isRestoreApplied)
         const triggerRestore = () => {
             if (handle.isRestoreApplied) return;
-            const currentConfig = this._getConfigForWindow(window);
-            if (currentConfig) {
-                const currentIdentity = currentConfig.wm_class;
-                this._applySavedState(window, currentIdentity, currentConfig);
+            const effective = this._getEffectiveConfig(window);
+            if (effective) {
+                this._applySavedState(window, effective.identity, effective.config);
             }
         };
 
@@ -375,8 +432,8 @@ export default class DejaWindowExtension extends Extension {
             }
 
             // Dynamically get current config to respect live changes
-            const currentConfig = this._getConfigForWindow(window);
-            if (!currentConfig || currentConfig.locked === true) return;
+            const effective = this._getEffectiveConfig(window);
+            if (!effective || effective.config.locked === true) return;
 
             // Schedule a timeout to save the window's state
             handle.timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
@@ -388,10 +445,8 @@ export default class DejaWindowExtension extends Extension {
                 const workspaceIndex = workspace ? workspace.index() : -1;
                 const monitorIndex = window.get_monitor();
 
-                const currentIdentity = currentConfig.wm_class;
-
-                this._performSave(currentIdentity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
-                    currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
+                this._performSave(effective.identity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
+                    effective.config, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
 
                 handle.timeoutId = 0;
                 return GLib.SOURCE_REMOVE;
@@ -411,13 +466,11 @@ export default class DejaWindowExtension extends Extension {
                 const workspaceIndex = workspace ? workspace.index() : -1;
                 const monitorIndex = window.get_monitor();
 
-                const currentConfig = this._getConfigForWindow(window);
+                const effective = this._getEffectiveConfig(window);
 
-                if (currentConfig && currentConfig.locked !== true) {
-                    const currentIdentity = currentConfig.wm_class;
-
-                    this._performSave(currentIdentity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
-                        currentConfig, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
+                if (effective && effective.config.locked !== true) {
+                    this._performSave(effective.identity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
+                        effective.config, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
                 }
             }
             this._cleanupWindow(window);

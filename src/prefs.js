@@ -1,5 +1,7 @@
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
+import Gdk from 'gi://Gdk';
+import GLib from 'gi://GLib';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 /**
@@ -57,20 +59,105 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         group.add(inputRow);
 
-        // Create ComboBoxText with Entry
-        const combo = Gtk.ComboBoxText.new_with_entry();
-        const entry = combo.get_child();
-        entry.set_placeholder_text('WM_CLASS or Title');
-        combo.set_hexpand(true);
-        combo.set_valign(Gtk.Align.CENTER);
-
         // Populate with known classes
         const known = settings.get_value('known-wm-classes').recursiveUnpack();
-        known.forEach(wmClass => {
-            combo.append(wmClass, wmClass);
-        });
 
-        inputRow.add_suffix(combo);
+        // Opens a picker for a known WM_CLASS, filling targetEntry on selection.
+        // GtkDropDown's popup is a separate xdg_popup Wayland surface, which on
+        // this GTK/Mutter combination silently fails to present when the widget
+        // is nested inside Adw.PreferencesPage's scrolled/clamped layout (no
+        // error, it just never opens). Adw.Dialog instead overlays in the same
+        // window surface as Adw.MessageDialog, which is confirmed to work here,
+        // so it's used for this picker too instead of chasing the popup bug.
+        const showKnownAppsPicker = (targetEntry) => {
+            if (known.length === 0) return;
+
+            const dialog = new Adw.Dialog({
+                title: 'Select a Known App',
+                content_width: 380,
+                content_height: 480
+            });
+
+            const toolbarView = new Adw.ToolbarView();
+            toolbarView.add_top_bar(new Adw.HeaderBar({ show_end_title_buttons: false }));
+
+            const searchEntry = new Gtk.SearchEntry({
+                placeholder_text: 'Search…',
+                margin_start: 12, margin_end: 12, margin_top: 6, margin_bottom: 6
+            });
+
+            const listBox = new Gtk.ListBox({
+                selection_mode: Gtk.SelectionMode.NONE,
+                css_classes: ['boxed-list'],
+                margin_start: 12, margin_end: 12, margin_bottom: 12
+            });
+            known.forEach(wmClass => {
+                const row = new Adw.ActionRow({ title: wmClass, activatable: true });
+                row.connect('activated', () => {
+                    targetEntry.set_text(wmClass);
+                    dialog.close();
+                });
+                listBox.append(row);
+            });
+
+            searchEntry.connect('search-changed', () => {
+                const query = searchEntry.get_text().toLowerCase();
+                let child = listBox.get_first_child();
+                while (child) {
+                    child.visible = !query || child.title.toLowerCase().includes(query);
+                    child = child.get_next_sibling();
+                }
+            });
+
+            const contentBox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL });
+            contentBox.append(searchEntry);
+            contentBox.append(new Gtk.ScrolledWindow({ vexpand: true, child: listBox }));
+
+            toolbarView.set_content(contentBox);
+            dialog.set_child(toolbarView);
+
+            // Adw.Dialog's own Escape-to-close binding fires on the entry's bubble
+            // phase, but GtkSearchEntry binds Escape itself (to clear its text),
+            // consuming the key first. A capture-phase controller on the dialog
+            // intercepts Escape before it reaches the search entry, so cancelling
+            // without picking anything always works regardless of focus.
+            const escController = new Gtk.EventControllerKey();
+            escController.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
+            escController.connect('key-pressed', (_controller, keyval) => {
+                if (keyval === Gdk.KEY_Escape) {
+                    dialog.close();
+                    return true;
+                }
+                return false;
+            });
+            dialog.add_controller(escController);
+
+            dialog.present(window);
+
+            // Focus the search entry once the dialog is actually mapped, so typing
+            // filters immediately without first having to click into it.
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                searchEntry.grab_focus();
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+
+        const entry = new Gtk.Entry({
+            placeholder_text: 'WM_CLASS or Title',
+            hexpand: true,
+            valign: Gtk.Align.CENTER
+        });
+        inputRow.add_suffix(entry);
+
+        if (known.length > 0) {
+            const pickAppButton = new Gtk.Button({
+                icon_name: 'view-list-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: 'Pick a known app'
+            });
+            pickAppButton.connect('clicked', () => showKnownAppsPicker(entry));
+            inputRow.add_suffix(pickAppButton);
+        }
 
         const addButton = new Gtk.Button({
             icon_name: 'list-add-symbolic',
@@ -97,6 +184,23 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
         const saveConfigs = (configs) => {
             settings.set_string('window-app-configs', JSON.stringify(configs));
+        };
+
+        // Builds an ActionRow with a single switch and wires it to onChange.
+        // addFn receives the finished row so callers can decide how/where to
+        // attach it (Adw.ExpanderRow.add_row vs Adw.PreferencesGroup.add) and
+        // whether to track it for later removal on refresh.
+        const makeSwitchRow = (addFn, title, subtitle, initialValue, onChange) => {
+            const row = new Adw.ActionRow({ title });
+            if (subtitle) row.set_subtitle(subtitle);
+            const sw = new Gtk.Switch({
+                active: !!initialValue,
+                valign: Gtk.Align.CENTER
+            });
+            sw.connect('notify::active', () => onChange(sw.active));
+            row.add_suffix(sw);
+            addFn(row);
+            return sw;
         };
 
         // Update helper to identify config by both wm_class and match_mode if possible.
@@ -204,146 +308,22 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     expanded: isExpanded
                 });
 
-                // Locked Switch
-                const lockedRow = new Adw.ActionRow({
-                    title: 'Locked - window updates/changes are not saved'
-                });
-                const lockedSwitch = new Gtk.Switch({
-                    active: config.locked || false,
-                    valign: Gtk.Align.CENTER
-                });
-                lockedSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'locked', lockedSwitch.active);
-                });
-                lockedRow.add_suffix(lockedSwitch);
-                row.add_row(lockedRow);
+                const addAppRow = (title, subtitle, key, initialValue) => {
+                    makeSwitchRow(r => row.add_row(r), title, subtitle, initialValue,
+                        value => updateConfig(config.wm_class, config.match_mode, key, value));
+                };
 
-                // Size Switch
-                const sizeRow = new Adw.ActionRow({
-                    title: 'Restore Size'
-                });
-                const sizeSwitch = new Gtk.Switch({
-                    active: config.restore_size,
-                    valign: Gtk.Align.CENTER
-                });
-                sizeSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_size', sizeSwitch.active);
-                });
-                sizeRow.add_suffix(sizeSwitch);
-                row.add_row(sizeRow);
-
-                // Pos Switch
-                const posRow = new Adw.ActionRow({
-                    title: 'Restore Position'
-                });
-                const posSwitch = new Gtk.Switch({
-                    active: config.restore_pos,
-                    valign: Gtk.Align.CENTER
-                });
-                posSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_pos', posSwitch.active);
-                });
-                posRow.add_suffix(posSwitch);
-                row.add_row(posRow);
-
-                // Maximized Switch
-                const maxRow = new Adw.ActionRow({
-                    title: 'Restore Maximized'
-                });
-                const maxSwitch = new Gtk.Switch({
-                    active: config.restore_maximized || false,
-                    valign: Gtk.Align.CENTER
-                });
-                maxSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_maximized', maxSwitch.active);
-                });
-                maxRow.add_suffix(maxSwitch);
-                row.add_row(maxRow);
-
-                // Workspace Switch
-                const workspaceRow = new Adw.ActionRow({
-                    title: 'Restore Workspace'
-                });
-                const workspaceSwitch = new Gtk.Switch({
-                    active: config.restore_workspace || false,
-                    valign: Gtk.Align.CENTER
-                });
-                workspaceSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_workspace', workspaceSwitch.active);
-                });
-                workspaceRow.add_suffix(workspaceSwitch);
-                row.add_row(workspaceRow);
-
-                // Switch to Workspace Switch
-                const switchWorkspaceRow = new Adw.ActionRow({
-                    title: 'Switch to Workspace',
-                    subtitle: 'Activate the workspace where the window is restored'
-                });
-                const switchWorkspaceSwitch = new Gtk.Switch({
-                    active: config.switch_to_workspace || false,
-                    valign: Gtk.Align.CENTER
-                });
-                switchWorkspaceSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'switch_to_workspace', switchWorkspaceSwitch.active);
-                });
-                switchWorkspaceRow.add_suffix(switchWorkspaceSwitch);
-                row.add_row(switchWorkspaceRow);
-
-                // Minimized Switch
-                const minimizedRow = new Adw.ActionRow({
-                    title: 'Restore Minimized'
-                });
-                const minimizedSwitch = new Gtk.Switch({
-                    active: config.restore_minimized || false,
-                    valign: Gtk.Align.CENTER
-                });
-                minimizedSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_minimized', minimizedSwitch.active);
-                });
-                minimizedRow.add_suffix(minimizedSwitch);
-                row.add_row(minimizedRow);
-
-                // Always on Top Switch
-                const aboveRow = new Adw.ActionRow({
-                    title: 'Restore Always on Top'
-                });
-                const aboveSwitch = new Gtk.Switch({
-                    active: config.restore_above || false,
-                    valign: Gtk.Align.CENTER
-                });
-                aboveSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_above', aboveSwitch.active);
-                });
-                aboveRow.add_suffix(aboveSwitch);
-                row.add_row(aboveRow);
-
-                // Sticky Switch
-                const stickyRow = new Adw.ActionRow({
-                    title: 'Restore Always on Visible Workspace'
-                });
-                const stickySwitch = new Gtk.Switch({
-                    active: config.restore_sticky || false,
-                    valign: Gtk.Align.CENTER
-                });
-                stickySwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'restore_sticky', stickySwitch.active);
-                });
-                stickyRow.add_suffix(stickySwitch);
-                row.add_row(stickyRow);
-
-                // Avoid Overlap Switch
-                const overlapRow = new Adw.ActionRow({
-                    title: 'Avoid Overlap for Additional Windows'
-                });
-                const overlapSwitch = new Gtk.Switch({
-                    active: config.avoid_overlap !== false,
-                    valign: Gtk.Align.CENTER
-                });
-                overlapSwitch.connect('notify::active', () => {
-                    updateConfig(config.wm_class, config.match_mode, 'avoid_overlap', overlapSwitch.active);
-                });
-                overlapRow.add_suffix(overlapSwitch);
-                row.add_row(overlapRow);
+                addAppRow('Locked - window updates/changes are not saved', null, 'locked', config.locked || false);
+                addAppRow('Restore Size', null, 'restore_size', config.restore_size);
+                addAppRow('Restore Position', null, 'restore_pos', config.restore_pos);
+                addAppRow('Restore Maximized', null, 'restore_maximized', config.restore_maximized || false);
+                addAppRow('Restore Workspace', null, 'restore_workspace', config.restore_workspace || false);
+                addAppRow('Switch to Workspace', 'Activate the workspace where the window is restored',
+                    'switch_to_workspace', config.switch_to_workspace || false);
+                addAppRow('Restore Minimized', null, 'restore_minimized', config.restore_minimized || false);
+                addAppRow('Restore Always on Top', null, 'restore_above', config.restore_above || false);
+                addAppRow('Restore Always on Visible Workspace', null, 'restore_sticky', config.restore_sticky || false);
+                addAppRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', config.avoid_overlap !== false);
 
                 // Delete Button
                 const deleteRow = new Adw.ActionRow({
@@ -371,13 +351,227 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // Listen for external changes (e.g. manual dconf edits)
         settingsSignalId = settings.connect('changed::window-app-configs', refreshList);
 
+        // -- Global Defaults Section --
+        // Applied automatically to every NORMAL window with no matching rule above.
+        // Kept as a single, always-present group (not per-config), backed by its own
+        // GSettings key so it doesn't interfere with per-app config identity.
+
+        const DEFAULT_GLOBAL_DEFAULTS = {
+            enabled: false,
+            restore_size: false,
+            restore_pos: false,
+            restore_maximized: false,
+            restore_workspace: false,
+            switch_to_workspace: false,
+            restore_minimized: false,
+            restore_above: false,
+            restore_sticky: false,
+            avoid_overlap: true,
+            locked: false,
+            excluded_wm_classes: []
+        };
+
+        const getGlobalDefaults = () => {
+            const json = settings.get_string('window-global-defaults');
+            try {
+                return { ...DEFAULT_GLOBAL_DEFAULTS, ...(JSON.parse(json) || {}) };
+            } catch (e) {
+                console.error('Error parsing window-global-defaults:', e);
+                return { ...DEFAULT_GLOBAL_DEFAULTS };
+            }
+        };
+
+        const saveGlobalDefaults = (defaults) => {
+            settings.set_string('window-global-defaults', JSON.stringify(defaults));
+        };
+
+        let globalDefaultsSignalId = null;
+
+        // Used by switches: writes a single field, blocking our own refresh
+        // (switches already reflect the new value; no need to rebuild the section).
+        const updateGlobalDefaults = (key, value) => {
+            const defaults = getGlobalDefaults();
+            defaults[key] = value;
+
+            if (globalDefaultsSignalId) settings.block_signal_handler(globalDefaultsSignalId);
+            saveGlobalDefaults(defaults);
+            if (globalDefaultsSignalId) settings.unblock_signal_handler(globalDefaultsSignalId);
+        };
+
+        // Used by the exclude list: a row needs to appear/disappear, so let the
+        // changed:: signal trigger a full section rebuild instead of blocking it.
+        const removeExcluded = (wmClass) => {
+            const defaults = getGlobalDefaults();
+            defaults.excluded_wm_classes = (defaults.excluded_wm_classes || []).filter(c => c !== wmClass);
+            saveGlobalDefaults(defaults);
+        };
+
+        const addExcluded = (wmClass) => {
+            const defaults = getGlobalDefaults();
+            const excluded = defaults.excluded_wm_classes || [];
+            if (!wmClass || excluded.includes(wmClass)) return;
+            excluded.push(wmClass);
+            defaults.excluded_wm_classes = excluded;
+            saveGlobalDefaults(defaults);
+        };
+
+        const globalDefaultsGroup = new Adw.PreferencesGroup({
+            title: 'Global Defaults',
+            description: 'Applied automatically to every normal window with no rule above. A rule above always takes priority.'
+        });
+        page.add(globalDefaultsGroup);
+
+        const excludeGroup = new Adw.PreferencesGroup({
+            title: 'Global Defaults — Excluded Apps',
+            description: 'These apps are never managed by Global Defaults, even when enabled.'
+        });
+        page.add(excludeGroup);
+
+        const excludeInputRow = new Adw.ActionRow({
+            title: 'Exclude an App',
+            subtitle: 'Enter its WM_CLASS'
+        });
+        excludeGroup.add(excludeInputRow);
+
+        const excludeEntry = new Gtk.Entry({
+            placeholder_text: 'WM_CLASS',
+            hexpand: true,
+            valign: Gtk.Align.CENTER
+        });
+        excludeInputRow.add_suffix(excludeEntry);
+
+        if (known.length > 0) {
+            const pickExcludedAppButton = new Gtk.Button({
+                icon_name: 'view-list-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: 'Pick a known app'
+            });
+            pickExcludedAppButton.connect('clicked', () => showKnownAppsPicker(excludeEntry));
+            excludeInputRow.add_suffix(pickExcludedAppButton);
+        }
+
+        const excludeAddButton = new Gtk.Button({
+            icon_name: 'list-add-symbolic',
+            valign: Gtk.Align.CENTER,
+            css_classes: ['suggested-action']
+        });
+        excludeInputRow.add_suffix(excludeAddButton);
+        excludeAddButton.connect('clicked', () => {
+            const text = excludeEntry.get_text().trim();
+            if (text) {
+                addExcluded(text);
+                excludeEntry.set_text('');
+            }
+        });
+
+        let globalDefaultsRows = [];
+        let excludeRows = [];
+
+        const refreshGlobalDefaultsSection = () => {
+            globalDefaultsRows.forEach(row => globalDefaultsGroup.remove(row));
+            globalDefaultsRows = [];
+            excludeRows.forEach(row => excludeGroup.remove(row));
+            excludeRows = [];
+
+            const defaults = getGlobalDefaults();
+
+            // Enabled switch, gated behind a confirmation dialog since it changes
+            // the risk model for every installed app at once, not just one the
+            // user has already tested via an explicit per-app rule.
+            const enabledRow = new Adw.ActionRow({
+                title: 'Enabled',
+                subtitle: 'Manage every normal window that has no rule above'
+            });
+            const enabledSwitch = new Gtk.Switch({ active: defaults.enabled, valign: Gtk.Align.CENTER });
+            let suppressToggle = false;
+            enabledSwitch.connect('notify::active', () => {
+                if (suppressToggle) return;
+
+                if (!enabledSwitch.active) {
+                    // Disabling is the safe direction: no confirmation needed.
+                    updateGlobalDefaults('enabled', false);
+                    return;
+                }
+
+                const dialog = new Adw.MessageDialog({
+                    heading: 'Enable Global Defaults?',
+                    body: 'This will manage every normal window of every application that doesn’t already have its own rule above. Some apps may not handle programmatic resizing or repositioning well and could become unstable. You can add misbehaving apps to the exclude list below at any time.',
+                    transient_for: window,
+                    modal: true
+                });
+                dialog.add_response('cancel', 'Cancel');
+                dialog.add_response('enable', 'Enable');
+                dialog.set_response_appearance('enable', Adw.ResponseAppearance.SUGGESTED);
+                dialog.set_default_response('cancel');
+                dialog.set_close_response('cancel');
+                dialog.connect('response', (_dlg, response) => {
+                    if (response === 'enable') {
+                        updateGlobalDefaults('enabled', true);
+                    } else {
+                        suppressToggle = true;
+                        enabledSwitch.active = false;
+                        suppressToggle = false;
+                    }
+                });
+                dialog.present();
+            });
+            enabledRow.add_suffix(enabledSwitch);
+            globalDefaultsGroup.add(enabledRow);
+            globalDefaultsRows.push(enabledRow);
+
+            const addDefaultRow = (title, subtitle, key, initialValue) => {
+                makeSwitchRow(r => {
+                    globalDefaultsGroup.add(r);
+                    globalDefaultsRows.push(r);
+                }, title, subtitle, initialValue, value => updateGlobalDefaults(key, value));
+            };
+
+            addDefaultRow('Locked - window updates/changes are not saved', null, 'locked', defaults.locked);
+            addDefaultRow('Restore Size', null, 'restore_size', defaults.restore_size);
+            addDefaultRow('Restore Position', null, 'restore_pos', defaults.restore_pos);
+            addDefaultRow('Restore Maximized', null, 'restore_maximized', defaults.restore_maximized);
+            addDefaultRow('Restore Workspace', null, 'restore_workspace', defaults.restore_workspace);
+            addDefaultRow('Switch to Workspace', 'Activate the workspace where the window is restored',
+                'switch_to_workspace', defaults.switch_to_workspace);
+            addDefaultRow('Restore Minimized', null, 'restore_minimized', defaults.restore_minimized);
+            addDefaultRow('Restore Always on Top', null, 'restore_above', defaults.restore_above);
+            addDefaultRow('Restore Always on Visible Workspace', null, 'restore_sticky', defaults.restore_sticky);
+            addDefaultRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', defaults.avoid_overlap);
+
+            (defaults.excluded_wm_classes || []).forEach(wmClass => {
+                const excludedRow = new Adw.ActionRow({ title: wmClass });
+                const removeBtn = new Gtk.Button({
+                    icon_name: 'user-trash-symbolic',
+                    css_classes: ['destructive-action'],
+                    valign: Gtk.Align.CENTER
+                });
+                removeBtn.connect('clicked', () => removeExcluded(wmClass));
+                excludedRow.add_suffix(removeBtn);
+                excludeGroup.add(excludedRow);
+                excludeRows.push(excludedRow);
+            });
+        };
+
+        // Initial load
+        refreshGlobalDefaultsSection();
+
+        // Listen for external changes (e.g. manual dconf edits, or our own
+        // exclude-list add/remove which is intentionally left unblocked above)
+        globalDefaultsSignalId = settings.connect('changed::window-global-defaults', refreshGlobalDefaultsSection);
+
         // Cleanup on window close
         window.connect('close-request', () => {
             if (settingsSignalId) {
                 settings.disconnect(settingsSignalId);
                 settingsSignalId = null;
             }
+            if (globalDefaultsSignalId) {
+                settings.disconnect(globalDefaultsSignalId);
+                globalDefaultsSignalId = null;
+            }
             rows = [];
+            globalDefaultsRows = [];
+            excludeRows = [];
         });
     }
 }
