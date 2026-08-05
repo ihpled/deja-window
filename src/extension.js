@@ -524,14 +524,16 @@ export default class DejaWindowExtension extends Extension {
                 targetY = state.y;
             }
 
-            // Avoid overlapping with existing windows of the same class
-            [targetX, targetY] = this._findFreePosition(workspace, window, identity, targetX, targetY);
+            if (config.avoid_overlap) {
+                // Avoid overlapping with existing windows of the same class
+                [targetX, targetY] = this._findFreePosition(workspace, window, identity, targetX, targetY);
 
-            // Final check to ensure we didn't drift out of the work area completely
-            // If we did, we might want to clamp or just accept it. 
-            // For now, let's just clamp the top-left to be somewhat visible.
-            if (targetX > workArea.x + workArea.width - 50) targetX = workArea.x + workArea.width - 50;
-            if (targetY > workArea.y + workArea.height - 50) targetY = workArea.y + workArea.height - 50;
+                // Final check to ensure we didn't drift out of the work area completely
+                // If we did, we might want to clamp or just accept it.
+                // For now, let's just clamp the top-left to be somewhat visible.
+                if (targetX > workArea.x + workArea.width - 50) targetX = workArea.x + workArea.width - 50;
+                if (targetY > workArea.y + workArea.height - 50) targetY = workArea.y + workArea.height - 50;
+            }
 
             debug(`[DejaWindow] Applying State for ${identity}: ${targetW}x${targetH} @ ${targetX},${targetY}`);
 
