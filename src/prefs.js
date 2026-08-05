@@ -19,7 +19,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // Use default height
         window.set_default_size(700, 0);
         const settings = this.getSettings();
-        const page = new Adw.PreferencesPage();
+        const page = new Adw.PreferencesPage({
+            title: 'Applications',
+            icon_name: 'preferences-desktop-apps-symbolic'
+        });
         const group = new Adw.PreferencesGroup({
             title: 'Application Configuration',
             description: 'Add windows to manage.'
@@ -27,6 +30,15 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         page.add(group);
 
         window.add(page);
+
+        // Global Defaults gets its own tab: with per-app configs already taking
+        // one full page, adding 9+ more switches plus the exclude list here made
+        // the main page too long to scan at a glance.
+        const defaultsPage = new Adw.PreferencesPage({
+            title: 'Global Defaults',
+            icon_name: 'preferences-system-symbolic'
+        });
+        window.add(defaultsPage);
 
         // -- Add New App Section --
 
@@ -419,13 +431,13 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             title: 'Global Defaults',
             description: 'Applied automatically to every normal window with no rule above. A rule above always takes priority.'
         });
-        page.add(globalDefaultsGroup);
+        defaultsPage.add(globalDefaultsGroup);
 
         const excludeGroup = new Adw.PreferencesGroup({
-            title: 'Global Defaults — Excluded Apps',
+            title: 'Excluded Apps',
             description: 'These apps are never managed by Global Defaults, even when enabled.'
         });
-        page.add(excludeGroup);
+        defaultsPage.add(excludeGroup);
 
         const excludeInputRow = new Adw.ActionRow({
             title: 'Exclude an App',
