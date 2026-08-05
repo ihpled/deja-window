@@ -495,7 +495,11 @@ export default class DejaWindowExtension extends Extension {
             // Before we can determine the work area, we need to make sure the window is located on the correct monitor.
             // So, if we are restoring position, then check and move to the saved monitor.
             const targetMonitor = state.monitor ?? 0;
-            if (config.restore_pos && targetMonitor !== window.get_monitor()) {
+            // The saved monitor index may no longer exist (monitor unplugged, layout changed since last save).
+            // Passing an out-of-range index to move_to_monitor() hits a fatal assertion in Mutter and crashes
+            // the whole gnome-shell process, so it must be validated against the currently connected monitors.
+            if (config.restore_pos && targetMonitor !== window.get_monitor() &&
+                targetMonitor >= 0 && targetMonitor < global.display.get_n_monitors()) {
               // Restore (move) the window to the saved monitor
               window.move_to_monitor(targetMonitor);
             }
