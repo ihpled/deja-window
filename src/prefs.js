@@ -336,7 +336,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     title: 'Avoid Overlap for Additional Windows'
                 });
                 const overlapSwitch = new Gtk.Switch({
-                    active: config.avoid_overlap || false,
+                    active: config.avoid_overlap !== false,
                     valign: Gtk.Align.CENTER
                 });
                 overlapSwitch.connect('notify::active', () => {

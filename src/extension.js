@@ -524,7 +524,7 @@ export default class DejaWindowExtension extends Extension {
                 targetY = state.y;
             }
 
-            if (config.avoid_overlap) {
+            if (config.avoid_overlap !== false) {
                 // Avoid overlapping with existing windows of the same class
                 [targetX, targetY] = this._findFreePosition(workspace, window, identity, targetX, targetY);
 
