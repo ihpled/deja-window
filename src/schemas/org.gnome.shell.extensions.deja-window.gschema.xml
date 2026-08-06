@@ -28,6 +28,15 @@
       <description>List of WM_CLASSes seen by the extension.</description>
     </key>
 
+    <!-- One-shot signal (JSON Object) set by the window menu's "Customize" action,
+         consumed and cleared by prefs.js on next open. -->
+    <!-- Format: {"wm_class": "...", "match_mode": "wm_class"|"title"} -->
+    <key name="prefs-highlight-target" type="s">
+      <default>''</default>
+      <summary>Pending rule to highlight in Preferences</summary>
+      <description>JSON identifying a window-app-configs rule to auto-expand next time Preferences opens.</description>
+    </key>
+
     <!-- Whether to show a top bar indicator with quick access to preferences / enable-disable -->
     <key name="show-indicator" type="b">
       <default>true</default>

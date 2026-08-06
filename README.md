@@ -20,6 +20,10 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
 * **Multi-Monitor Support**: Automatically detects and restores windows to the exact monitor they were previously saved on.
 * **Layout Locking**: Freeze a window's saved layout to maintain your perfect configuration, preventing accidental updates when temporarily moving or resizing windows.
 * **Smart Centering**: Automatically centers windows that are configured but haven't been saved yet.  
+* **Global Defaults (Experimental)**: Optionally manage every normal window that doesn't already have its own rule, with independent restore toggles and its own exclude list for apps that should never be touched by it.
+* **Window Menu Quick Actions**: Right-click a window's title bar (or press Super+Space) for a "Deja Window" submenu to manage it by class or title, exclude it, or jump straight to its rule in Preferences.
+* **Non-Destructive Rule Toggling**: Turn a rule off — from Preferences or from the window menu — without deleting it. Its customization is kept and restored the moment you turn it back on.
+* **Top Bar Indicator**: An optional icon in the top bar for quick access to Preferences and to pause/resume Deja Window without disabling the extension itself.
 * **Wayland Ready**: Handles the specific timing constraints of window management on Wayland.
 
 **Compatibility Note**: While this extension works with the majority of standard applications, some apps utilize custom layout mechanisms or non-standard toolkits that may override or ignore the extension's positioning attempts.
@@ -46,7 +50,9 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
 
 ## **⚙️ Configuration**
 
-Open the extension preferences to start managing your windows.
+Open the extension preferences to start managing your windows. Preferences are organized into three tabs: **Applications** (per-app rules), **Global Defaults** (experimental, opt-in defaults for everything else) and **Settings** (top bar indicator and the master Enabled switch).
+
+### **Applications tab**
 
 1. **Add New Windows**:  
    * Enter the WM_CLASS or Window Title of the window you want to manage.  
@@ -65,6 +71,32 @@ Open the extension preferences to start managing your windows.
    * **Restore Minimized**: App will open minimized if it was closed in that state.  
    * **Restore Always on Top**: App will maintain its "Always on Top" status.  
    * **Restore Always on Visible Workspace**: App will maintain its "Always on Visible Workspace" (sticky) status.
+   * **Avoid Overlap for Additional Windows**: If another window of this app is already sitting at the restored position, offsets this one diagonally so it doesn't land exactly on top of it. On by default.
+4. **Enabling/Disabling a Rule**: Each rule has its own switch, separate from the delete button. Turning it off has the same effect as removing it — the window is left unmanaged — but its customization is kept and comes right back when you turn it back on.
+
+### **Global Defaults tab (Experimental)**
+
+Rules applied automatically to every *normal* window that doesn't already match a rule in the Applications tab. Explicit per-app rules always take priority.
+
+* Has the same toggles as a per-app rule.
+* Turning it on is gated behind a confirmation dialog, since it changes the risk model for every installed app at once rather than one app you've already tested.
+* **Excluded Apps**: WM_CLASS values that should never be touched by Global Defaults, even while it's enabled.
+
+### **Settings tab**
+
+* **Enabled**: The master switch for Deja Window. When off, the extension stays installed and active but all window tracking, restoring and saving is bypassed.
+* **Show Icon in Top Bar**: Adds an indicator to the top bar with quick access to Preferences and to the Enabled switch above.
+
+## **🖱️ Window Menu Quick Actions**
+
+Right-click a window's title bar (or press Super+Space) to open GNOME's window menu. Deja Window adds a **"Deja Window"** submenu there for quick, per-window changes without having to open Preferences:
+
+* **Managed by Window Class** / **Managed by Window Title**: creates (or re-enables) a rule matching this window's WM_CLASS or title, with every restore option turned on by default. The two are mutually exclusive for a given window — picking one turns off the other.
+* **Customize**: jumps straight to Preferences with that rule expanded, ready to fine-tune.
+* **Unmanaged**: turns off whichever rule currently governs this window, without deleting it. Shown as **"Unmanaged (Global Defaults)"** when Global Defaults is enabled, since the window will still be managed by it.
+* **Excluded**: turns off the window's rule and adds its WM_CLASS to the Global Defaults exclude list, so it stays untouched even if Global Defaults is enabled.
+
+As with the Applications tab's per-rule switch, none of these actions delete a rule — they only turn it on or off, so switching back restores any customization you'd already made.
 
 ## **🛠 Troubleshooting**
 

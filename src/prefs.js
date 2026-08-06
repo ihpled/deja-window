@@ -58,6 +58,24 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         window.add(settingsPage);
 
+        // Mirrors the logical bypass switch in the top bar indicator's menu
+        // (functionality-enabled): same GSettings key, so toggling it here or
+        // from the indicator stays in sync either way. Placed first/prominently
+        // since it's the master switch for all window tracking/restore/save.
+        const statusGroup = new Adw.PreferencesGroup({
+            title: 'Status'
+        });
+        settingsPage.add(statusGroup);
+
+        const statusRow = new Adw.ActionRow({
+            title: 'Enabled',
+            subtitle: 'When off, Deja Window stays installed but all window tracking, restoring and saving is bypassed.'
+        });
+        const statusSwitch = new Gtk.Switch({ valign: Gtk.Align.CENTER });
+        settings.bind('functionality-enabled', statusSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
+        statusRow.add_suffix(statusSwitch);
+        statusGroup.add(statusRow);
+
         const indicatorGroup = new Adw.PreferencesGroup({
             title: 'Top Bar',
             description: 'Quickly access Deja Window settings or enable/disable the extension from the top bar.'
@@ -287,6 +305,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             configs.push({
                 wm_class: wmClass, // Acts as the pattern/value
                 match_mode: matchMode,
+                enabled: true,
                 restore_size: false,
                 restore_pos: false,
                 restore_maximized: false,
@@ -346,15 +365,38 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
                 const isExpanded = expandedStates[title] || false;
 
+                // Row stays expandable regardless of enabled state, so a
+                // disabled rule's details can still be reviewed/edited; only
+                // the detail toggles below (never the delete button) are
+                // greyed out while disabled.
                 const row = new Adw.ExpanderRow({
                     title: title,
-                    show_enable_switch: false, // We use a delete button instead
                     expanded: isExpanded
                 });
+                // Identifies this row for the window menu's "Customize" action
+                // (see applyHighlightTarget below), independent of the display title.
+                row._dejaMatchWmClass = config.wm_class;
+                row._dejaMatchMode = config.match_mode || 'wm_class';
 
+                // Lets the rule be switched off without deleting it: same
+                // effect as removing it (DejaWindowExtension._getConfigForWindow
+                // skips disabled rules), but its customization is kept and the
+                // switch can be flipped back on to restore it. A plain suffix
+                // switch (rather than AdwExpanderRow's own enable-expansion) so
+                // it controls our "enabled" flag without also locking the row
+                // from being expanded while off.
+                const enabledSwitch = new Gtk.Switch({
+                    active: config.enabled !== false,
+                    valign: Gtk.Align.CENTER
+                });
+                row.add_suffix(enabledSwitch);
+
+                const detailRows = [];
                 const addAppRow = (title, subtitle, key, initialValue) => {
-                    makeSwitchRow(r => row.add_row(r), title, subtitle, initialValue,
+                    let detailRow;
+                    makeSwitchRow(r => { detailRow = r; row.add_row(r); }, title, subtitle, initialValue,
                         value => updateConfig(config.wm_class, config.match_mode, key, value));
+                    detailRows.push(detailRow);
                 };
 
                 addAppRow('Locked - window updates/changes are not saved', null, 'locked', config.locked || false);
@@ -368,6 +410,12 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 addAppRow('Restore Always on Top', null, 'restore_above', config.restore_above || false);
                 addAppRow('Restore Always on Visible Workspace', null, 'restore_sticky', config.restore_sticky || false);
                 addAppRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', config.avoid_overlap !== false);
+
+                detailRows.forEach(r => { r.sensitive = enabledSwitch.active; });
+                enabledSwitch.connect('notify::active', () => {
+                    updateConfig(config.wm_class, config.match_mode, 'enabled', enabledSwitch.active);
+                    detailRows.forEach(r => { r.sensitive = enabledSwitch.active; });
+                });
 
                 // Delete Button
                 const deleteRow = new Adw.ActionRow({
@@ -394,6 +442,35 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
         // Listen for external changes (e.g. manual dconf edits)
         settingsSignalId = settings.connect('changed::window-app-configs', refreshList);
+
+        // Consumes the one-shot signal set by the window menu's "Customize" action:
+        // switches to this page and expands the matching rule's row. Cleared
+        // right after reading so it doesn't re-trigger on a later refresh/open.
+        let prefsHighlightSignalId = null;
+        const applyHighlightTarget = () => {
+            const raw = settings.get_string('prefs-highlight-target');
+            if (!raw) return;
+
+            let target = null;
+            try {
+                target = JSON.parse(raw);
+            } catch (e) {
+                target = null;
+            }
+
+            settings.set_string('prefs-highlight-target', '');
+            if (!target || !target.wm_class) return;
+
+            const matchMode = target.match_mode || 'wm_class';
+            const row = rows.find(r => r._dejaMatchWmClass === target.wm_class && r._dejaMatchMode === matchMode);
+            if (!row) return;
+
+            window.set_visible_page(page);
+            row.set_expanded(true);
+            row.grab_focus();
+        };
+        applyHighlightTarget();
+        prefsHighlightSignalId = settings.connect('changed::prefs-highlight-target', applyHighlightTarget);
 
         // -- Global Defaults Section --
         // Applied automatically to every NORMAL window with no matching rule above.
@@ -511,6 +588,16 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         let globalDefaultsRows = [];
         let excludeRows = [];
 
+        // Every row below "Enabled" (including the whole Excluded Apps group)
+        // only matters while Global Defaults itself is on, so grey them out
+        // together with it. Index 0 in globalDefaultsRows is the "Enabled" row
+        // itself, which must stay interactive so the section can be turned
+        // back on.
+        const updateSectionSensitivity = (active) => {
+            globalDefaultsRows.slice(1).forEach(row => { row.sensitive = active; });
+            excludeGroup.sensitive = active;
+        };
+
         const refreshGlobalDefaultsSection = () => {
             globalDefaultsRows.forEach(row => globalDefaultsGroup.remove(row));
             globalDefaultsRows = [];
@@ -534,6 +621,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 if (!enabledSwitch.active) {
                     // Disabling is the safe direction: no confirmation needed.
                     updateGlobalDefaults('enabled', false);
+                    updateSectionSensitivity(false);
                     return;
                 }
 
@@ -551,6 +639,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 dialog.connect('response', (_dlg, response) => {
                     if (response === 'enable') {
                         updateGlobalDefaults('enabled', true);
+                        updateSectionSensitivity(true);
                     } else {
                         suppressToggle = true;
                         enabledSwitch.active = false;
@@ -594,6 +683,8 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 excludeGroup.add(excludedRow);
                 excludeRows.push(excludedRow);
             });
+
+            updateSectionSensitivity(defaults.enabled);
         };
 
         // Initial load
@@ -612,6 +703,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             if (globalDefaultsSignalId) {
                 settings.disconnect(globalDefaultsSignalId);
                 globalDefaultsSignalId = null;
+            }
+            if (prefsHighlightSignalId) {
+                settings.disconnect(prefsHighlightSignalId);
+                prefsHighlightSignalId = null;
             }
             rows = [];
             globalDefaultsRows = [];

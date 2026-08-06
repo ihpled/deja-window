@@ -23,6 +23,7 @@ cd "$SRC_DIR" || exit
 zip -r "$ZIP_NAME" extension.js \
     metadata.json \
     prefs.js \
+    windowMenu.js \
     schemas/org.gnome.shell.extensions.deja-window.gschema.xml \
     icons/deja-window-symbolic.png \
     icons/globe-symbolic.svg

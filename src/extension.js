@@ -6,6 +6,7 @@ import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import { DejaWindowMenu } from './windowMenu.js';
 
 const DEBUG = false;
 
@@ -92,9 +93,18 @@ export default class DejaWindowExtension extends Extension {
 
         // Initialize probes map
         this._probes = new Map();
+
+        // "Deja Window" submenu injected into GNOME's window (title bar) menu
+        this._windowMenu = new DejaWindowMenu(this);
+        this._windowMenu.enable();
     }
 
     disable() {
+        if (this._windowMenu) {
+            this._windowMenu.disable();
+            this._windowMenu = null;
+        }
+
         // Clean up global signals associated with this extension
         if (this._settings) {
             this._settings.disconnectObject(this);
@@ -255,6 +265,10 @@ export default class DejaWindowExtension extends Extension {
         const title = window.get_title();
 
         return this._configs.find(c => {
+            // A disabled rule is treated as if it didn't exist: same effect as
+            // deleting it, but its definition/customization is preserved.
+            if (c.enabled === false) return false;
+
             const mode = c.match_mode || 'wm_class';
             let valueToCheck = wmClass;
 
