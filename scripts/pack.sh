@@ -18,10 +18,13 @@ echo "📦 Packaging from $SRC_DIR..."
 # Zip the extension files from src
 # -r: recurse into directories
 cd "$SRC_DIR" || exit
+# deja-window.png is excluded on purpose: it's the full-color logo used only
+# for the extensions.gnome.org listing, not loaded by the extension at runtime.
 zip -r "$ZIP_NAME" extension.js \
     metadata.json \
     prefs.js \
-    schemas/org.gnome.shell.extensions.deja-window.gschema.xml
+    schemas/org.gnome.shell.extensions.deja-window.gschema.xml \
+    icons/deja-window-symbolic.png
 
 # Add README.md from root
 echo "📄 Adding README.md..."

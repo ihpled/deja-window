@@ -28,6 +28,13 @@
       <description>List of WM_CLASSes seen by the extension.</description>
     </key>
 
+    <!-- Whether to show a top bar indicator with quick access to preferences / enable-disable -->
+    <key name="show-indicator" type="b">
+      <default>true</default>
+      <summary>Show top bar indicator</summary>
+      <description>Whether to show an icon in the top bar for quick access to Deja Window settings and to enable/disable the extension.</description>
+    </key>
+
     <!-- Global Default Rules (JSON Object), applied to NORMAL windows with no matching per-app config -->
     <key name="window-global-defaults" type="s">
       <default>'{

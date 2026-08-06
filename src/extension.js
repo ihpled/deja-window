@@ -1,6 +1,11 @@
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const DEBUG = false;
 
@@ -51,6 +56,13 @@ export default class DejaWindowExtension extends Extension {
             this._adoptUnmanagedWindows();
         }, this);
 
+        // Top bar indicator, shown/hidden per the show-indicator preference
+        this._indicator = null;
+        this._settings.connectObject('changed::show-indicator', () => {
+            this._updateIndicator();
+        }, this);
+        this._updateIndicator();
+
         // Subscribe to the global 'window-created' event to detect new windows using connectObject
         global.display.connectObject('window-created', (display, window) => {
             this._onWindowCreated(window);
@@ -78,6 +90,8 @@ export default class DejaWindowExtension extends Extension {
         }
         global.display.disconnectObject(this);
 
+        this._destroyIndicator();
+
         // Clean up all managed windows
         for (const window of this._handles.keys()) {
             this._cleanupWindow(window);
@@ -97,6 +111,56 @@ export default class DejaWindowExtension extends Extension {
         this._settings = null;
         this._configs = [];
         this._globalDefaults = {};
+    }
+
+    // --- TOP BAR INDICATOR ---
+
+    _updateIndicator() {
+        const show = this._settings.get_boolean('show-indicator');
+        if (show) {
+            this._createIndicator();
+        } else {
+            this._destroyIndicator();
+        }
+    }
+
+    _createIndicator() {
+        if (this._indicator) return;
+
+        const indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
+        const iconPath = GLib.build_filenamev([this.path, 'icons', 'deja-window-symbolic.png']);
+        indicator.add_child(new St.Icon({
+            gicon: Gio.icon_new_for_string(iconPath),
+            style_class: 'system-status-icon'
+        }));
+
+        const settingsItem = new PopupMenu.PopupMenuItem('Deja Window Settings');
+        settingsItem.connect('activate', () => this.openPreferences());
+        indicator.menu.addMenuItem(settingsItem);
+
+        indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // Lets the user disable the extension from the top bar without going
+        // through the Extensions app. Only "off" is wired up: the moment the
+        // extension disables itself, disable() destroys this indicator, so
+        // there is no in-menu path back to "on".
+        const enabledItem = new PopupMenu.PopupSwitchMenuItem('Extension Enabled', true);
+        enabledItem.connect('toggled', (_item, state) => {
+            if (!state) {
+                Main.extensionManager.disableExtension(this.uuid);
+            }
+        });
+        indicator.menu.addMenuItem(enabledItem);
+
+        Main.panel.addToStatusArea(this.uuid, indicator);
+        this._indicator = indicator;
+    }
+
+    _destroyIndicator() {
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
     }
 
     // --- HELPER METHODS FOR API COMPATIBILITY ---

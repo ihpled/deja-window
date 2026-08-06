@@ -1,6 +1,7 @@
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
 import Gdk from 'gi://Gdk';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
@@ -36,9 +37,32 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // the main page too long to scan at a glance.
         const defaultsPage = new Adw.PreferencesPage({
             title: 'Global Defaults',
-            icon_name: 'preferences-system-symbolic'
+            icon_name: 'globe-symbolic'
         });
         window.add(defaultsPage);
+
+        // General extension settings (currently just the top bar indicator),
+        // kept separate from Global Defaults since it's about the extension
+        // itself rather than window-restore behavior.
+        const settingsPage = new Adw.PreferencesPage({
+            title: 'Settings',
+            icon_name: 'preferences-system-symbolic'
+        });
+        window.add(settingsPage);
+
+        const indicatorGroup = new Adw.PreferencesGroup({
+            title: 'Top Bar',
+            description: 'Quickly access Deja Window settings or enable/disable the extension from the top bar.'
+        });
+        settingsPage.add(indicatorGroup);
+
+        const indicatorRow = new Adw.ActionRow({
+            title: 'Show Icon in Top Bar'
+        });
+        const indicatorSwitch = new Gtk.Switch({ valign: Gtk.Align.CENTER });
+        settings.bind('show-indicator', indicatorSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
+        indicatorRow.add_suffix(indicatorSwitch);
+        indicatorGroup.add(indicatorRow);
 
         // -- Add New App Section --
 

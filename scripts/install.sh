@@ -7,7 +7,10 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SRC_DIR="$PROJECT_ROOT/src"
 
+# deja-window.png is excluded on purpose: it's the full-color logo used only
+# for the extensions.gnome.org listing, not loaded by the extension at runtime.
 FILES_TO_INSTALL="extension.js prefs.js metadata.json schemas"
+ICON_FILES="icons/deja-window-symbolic.png"
 ZIP_MODE=false
 
 # Check for --zip argument
@@ -32,7 +35,7 @@ if [ "$ZIP_MODE" = true ]; then
     # Create zip archive
     echo "🤐 Creating zip package: $ZIP_FILE"
     rm -f "$ZIP_FILE"
-    zip -r "$ZIP_FILE" $FILES_TO_INSTALL
+    zip -r "$ZIP_FILE" $FILES_TO_INSTALL $ICON_FILES
 
     echo "✅ Package created successfully!"
 else
@@ -45,6 +48,8 @@ else
     # 3. Copy files
     echo "📦 Copying files to $INSTALL_DIR..."
     cp -r $FILES_TO_INSTALL "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/icons"
+    cp $ICON_FILES "$INSTALL_DIR/icons/"
 
     # 4. Success message
     echo "✅ Installation complete!"
