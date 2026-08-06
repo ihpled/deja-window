@@ -32,7 +32,16 @@
     <key name="show-indicator" type="b">
       <default>true</default>
       <summary>Show top bar indicator</summary>
-      <description>Whether to show an icon in the top bar for quick access to Deja Window settings and to enable/disable the extension.</description>
+      <description>Whether to show an icon in the top bar for quick access to Deja Window settings and to toggle its functionality on/off.</description>
+    </key>
+
+    <!-- Logical on/off switch surfaced in the top bar indicator's menu. When false,
+         the extension stays enabled (so the indicator/menu remain available) but
+         all window tracking, restoring and saving is bypassed. -->
+    <key name="functionality-enabled" type="b">
+      <default>true</default>
+      <summary>Functionality enabled</summary>
+      <description>Whether window tracking/restoring/saving is active. Toggled from the top bar indicator without disabling the extension itself.</description>
     </key>
 
     <!-- Global Default Rules (JSON Object), applied to NORMAL windows with no matching per-app config -->

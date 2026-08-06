@@ -43,6 +43,17 @@ export default class DejaWindowExtension extends Extension {
         this._updateConfigs();
         this._updateGlobalDefaults();
 
+        // Logical bypass switch (top bar indicator menu): when false, the
+        // extension stays enabled but all tracking/restore/save is a no-op.
+        this._functionalityEnabled = this._settings.get_boolean('functionality-enabled');
+        this._settings.connectObject('changed::functionality-enabled', () => {
+            this._functionalityEnabled = this._settings.get_boolean('functionality-enabled');
+            if (this._functionalityEnabled) {
+                // Windows opened while bypassed were never adopted; pick them up now.
+                this._adoptUnmanagedWindows();
+            }
+        }, this);
+
         // Listen for config changes using connectObject
         this._settings.connectObject('changed::window-app-configs', () => {
             this._updateConfigs();
@@ -111,6 +122,7 @@ export default class DejaWindowExtension extends Extension {
         this._settings = null;
         this._configs = [];
         this._globalDefaults = {};
+        this._functionalityEnabled = true;
     }
 
     // --- TOP BAR INDICATOR ---
@@ -140,16 +152,16 @@ export default class DejaWindowExtension extends Extension {
 
         indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Lets the user disable the extension from the top bar without going
-        // through the Extensions app. Only "off" is wired up: the moment the
-        // extension disables itself, disable() destroys this indicator, so
-        // there is no in-menu path back to "on".
-        const enabledItem = new PopupMenu.PopupSwitchMenuItem('Extension Enabled', true);
+        // Logical on/off switch: bypasses window tracking/restore/save without
+        // actually disabling the extension, so the indicator and this menu
+        // stay available to switch it back on.
+        const enabledItem = new PopupMenu.PopupSwitchMenuItem('Enabled', this._functionalityEnabled);
         enabledItem.connect('toggled', (_item, state) => {
-            if (!state) {
-                Main.extensionManager.disableExtension(this.uuid);
-            }
+            this._settings.set_boolean('functionality-enabled', state);
         });
+        this._settings.connectObject('changed::functionality-enabled', () => {
+            enabledItem.setToggleState(this._settings.get_boolean('functionality-enabled'));
+        }, indicator);
         indicator.menu.addMenuItem(enabledItem);
 
         Main.panel.addToStatusArea(this.uuid, indicator);
@@ -397,6 +409,9 @@ export default class DejaWindowExtension extends Extension {
 
     // Helper to check if we should manage a window. If so, sets up listeners.
     _checkAndSetup(window) {
+        // Bypassed: skip adopting new windows entirely, no side effects.
+        if (!this._functionalityEnabled) return false;
+
         // Double check validity before setup
         if (!this._isValidManagedWindow(window)) return false;
 
@@ -485,6 +500,9 @@ export default class DejaWindowExtension extends Extension {
 
         // Helper to handle window changes. Logs the window's frame rect and checks if we should save the window's state.
         const handleWindowChange = (window) => {
+            // Bypassed: no saving while the logical switch is off.
+            if (!this._functionalityEnabled) return;
+
             // If we haven't finished the initial restore, don't save anything!
             // Avoid overwriting saved state with partial coordinates during opening.
             if (!handle.isRestoreApplied) return;
@@ -520,8 +538,8 @@ export default class DejaWindowExtension extends Extension {
         // Helper to handle window unmanaging. Saves the window's state.
         const handleWindowUnmanaging = () => {
             debug('[DejaWindow] Window unmanaged:', identity);
-            // Last save before closing
-            if (handle.isRestoreApplied) {
+            // Last save before closing (skipped while bypassed)
+            if (this._functionalityEnabled && handle.isRestoreApplied) {
                 const rect = window.get_frame_rect();
                 const isMaximized = window.maximized_horizontally || window.maximized_vertically;
 
