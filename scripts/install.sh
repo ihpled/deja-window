@@ -10,7 +10,7 @@ SRC_DIR="$PROJECT_ROOT/src"
 # deja-window.png is excluded on purpose: it's the full-color logo used only
 # for the extensions.gnome.org listing, not loaded by the extension at runtime.
 FILES_TO_INSTALL="extension.js prefs.js metadata.json schemas"
-ICON_FILES="icons/deja-window-symbolic.png"
+ICON_FILES="icons/deja-window-symbolic.png icons/globe-symbolic.svg"
 ZIP_MODE=false
 
 # Check for --zip argument

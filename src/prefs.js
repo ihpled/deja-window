@@ -19,6 +19,14 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         // Use default height
         window.set_default_size(700, 0);
+
+        // The extension ships a custom "globe-symbolic" icon (for the Global
+        // Defaults tab) that isn't part of the system icon theme, so it has
+        // to be added as an extra search path before it can be referenced
+        // by name below.
+        const iconsPath = GLib.build_filenamev([this.path, 'icons']);
+        Gtk.IconTheme.get_for_display(window.get_display()).add_search_path(iconsPath);
+
         const settings = this.getSettings();
         const page = new Adw.PreferencesPage({
             title: 'Applications',
@@ -38,7 +46,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         const defaultsPage = new Adw.PreferencesPage({
             title: 'Global Defaults',
             icon_name: 'globe-symbolic'
-        });
+        }); // custom icon, see src/icons/globe-symbolic.svg and the search path added above
         window.add(defaultsPage);
 
         // General extension settings (currently just the top bar indicator),

@@ -24,7 +24,8 @@ zip -r "$ZIP_NAME" extension.js \
     metadata.json \
     prefs.js \
     schemas/org.gnome.shell.extensions.deja-window.gschema.xml \
-    icons/deja-window-symbolic.png
+    icons/deja-window-symbolic.png \
+    icons/globe-symbolic.svg
 
 # Add README.md from root
 echo "📄 Adding README.md..."
