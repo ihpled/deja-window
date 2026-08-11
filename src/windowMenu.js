@@ -102,18 +102,29 @@ export class DejaWindowMenu {
         // DejaWindowExtension._getEffectiveConfig's explicit-config lookup).
         const activeConfig = configs.find(c => this._configMatches(c, wmClass, title));
 
-        // The window menu only manages exact wm_class exclusion rules; rules
-        // targeting titles or using regex are editable from Preferences only.
+        // The window menu only manages exact (non-regex) exclusion rules by
+        // wm_class or title; regex exclusion rules are editable from
+        // Preferences only.
         const excludedList = globalDefaults.excluded_apps || [];
-        const excludedIdx = wmClass
+        const excludedClassIdx = wmClass
             ? excludedList.findIndex(r => r.wm_class === wmClass && (r.match_mode || 'wm_class') === 'wm_class' && !r.is_regex)
             : -1;
+        const excludedTitleIdx = title
+            ? excludedList.findIndex(r => r.wm_class === title && r.match_mode === 'title' && !r.is_regex)
+            : -1;
 
-        const state = activeConfig
-            ? (activeConfig.match_mode === 'title' ? 'name' : 'class')
-            : (excludedIdx !== -1 ? 'excluded' : 'unmanaged');
+        let state;
+        if (activeConfig) {
+            state = activeConfig.match_mode === 'title' ? 'name' : 'class';
+        } else if (excludedClassIdx !== -1) {
+            state = 'excluded-class';
+        } else if (excludedTitleIdx !== -1) {
+            state = 'excluded-title';
+        } else {
+            state = 'unmanaged';
+        }
 
-        return { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedIdx, state };
+        return { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedClassIdx, excludedTitleIdx, state };
     }
 
     _appendSubmenu(menu, window) {
@@ -155,7 +166,8 @@ export class DejaWindowMenu {
         // untouched: it still gets managed via Global Defaults, so say so.
         const unmanagedLabel = globalDefaults.enabled ? ' Managed by Global Defaults' : 'Unmanaged';
         addItem(unmanagedLabel, 'unmanaged', true);
-        addItem('Excluded', 'excluded', !!wmClass);
+        addItem('Excluded by Window Class', 'excluded-class', !!wmClass);
+        addItem('Excluded by Window Title', 'excluded-title', !!title);
     }
 
     // Opens Preferences with the window's current rule pre-expanded. Since
@@ -175,11 +187,25 @@ export class DejaWindowMenu {
         this._extension.openPreferences();
     }
 
+    // Removes the (menu-managed) exclusion rules at the given indexes from
+    // excludedList, highest index first so splices don't shift each other.
+    // Returns true if anything was removed.
+    _removeExclusions(excludedList, classIdx, titleIdx) {
+        let removed = false;
+        for (const idx of [classIdx, titleIdx].sort((a, b) => b - a)) {
+            if (idx !== -1) {
+                excludedList.splice(idx, 1);
+                removed = true;
+            }
+        }
+        return removed;
+    }
+
     _applyState(window, wmClass, title, targetState) {
         const settings = this._extension._settings;
         if (!settings) return;
 
-        const { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedIdx, state } =
+        const { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedClassIdx, excludedTitleIdx, state } =
             this._readState(wmClass, title);
 
         // Radio-style items: clicking the already-active one is a no-op.
@@ -223,25 +249,31 @@ export class DejaWindowMenu {
 
             retireActiveConfig(slot);
 
-            if (excludedIdx !== -1) {
-                excludedList.splice(excludedIdx, 1);
+            if (this._removeExclusions(excludedList, excludedClassIdx, excludedTitleIdx)) {
                 globalDefaults.excluded_apps = excludedList;
                 defaultsChanged = true;
             }
         } else if (targetState === 'unmanaged') {
             retireActiveConfig(null);
 
-            if (excludedIdx !== -1) {
-                excludedList.splice(excludedIdx, 1);
+            if (this._removeExclusions(excludedList, excludedClassIdx, excludedTitleIdx)) {
                 globalDefaults.excluded_apps = excludedList;
                 defaultsChanged = true;
             }
-        } else if (targetState === 'excluded') {
-            if (!wmClass) return;
+        } else if (targetState === 'excluded-class' || targetState === 'excluded-title') {
+            const pattern = targetState === 'excluded-class' ? wmClass : title;
+            if (!pattern) return;
 
             retireActiveConfig(null);
 
-            excludedList.push({ wm_class: wmClass, match_mode: 'wm_class', is_regex: false });
+            // Excluding by class and by title are mutually exclusive for the
+            // same window: drop the other one before adding the new rule.
+            this._removeExclusions(excludedList, excludedClassIdx, excludedTitleIdx);
+            excludedList.push({
+                wm_class: pattern,
+                match_mode: targetState === 'excluded-class' ? 'wm_class' : 'title',
+                is_regex: false,
+            });
             globalDefaults.excluded_apps = excludedList;
             defaultsChanged = true;
         }
