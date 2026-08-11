@@ -102,8 +102,12 @@ export class DejaWindowMenu {
         // DejaWindowExtension._getEffectiveConfig's explicit-config lookup).
         const activeConfig = configs.find(c => this._configMatches(c, wmClass, title));
 
-        const excludedList = globalDefaults.excluded_wm_classes || [];
-        const excludedIdx = wmClass ? excludedList.indexOf(wmClass) : -1;
+        // The window menu only manages exact wm_class exclusion rules; rules
+        // targeting titles or using regex are editable from Preferences only.
+        const excludedList = globalDefaults.excluded_apps || [];
+        const excludedIdx = wmClass
+            ? excludedList.findIndex(r => r.wm_class === wmClass && (r.match_mode || 'wm_class') === 'wm_class' && !r.is_regex)
+            : -1;
 
         const state = activeConfig
             ? (activeConfig.match_mode === 'title' ? 'name' : 'class')
@@ -221,7 +225,7 @@ export class DejaWindowMenu {
 
             if (excludedIdx !== -1) {
                 excludedList.splice(excludedIdx, 1);
-                globalDefaults.excluded_wm_classes = excludedList;
+                globalDefaults.excluded_apps = excludedList;
                 defaultsChanged = true;
             }
         } else if (targetState === 'unmanaged') {
@@ -229,7 +233,7 @@ export class DejaWindowMenu {
 
             if (excludedIdx !== -1) {
                 excludedList.splice(excludedIdx, 1);
-                globalDefaults.excluded_wm_classes = excludedList;
+                globalDefaults.excluded_apps = excludedList;
                 defaultsChanged = true;
             }
         } else if (targetState === 'excluded') {
@@ -237,8 +241,8 @@ export class DejaWindowMenu {
 
             retireActiveConfig(null);
 
-            excludedList.push(wmClass);
-            globalDefaults.excluded_wm_classes = excludedList;
+            excludedList.push({ wm_class: wmClass, match_mode: 'wm_class', is_regex: false });
+            globalDefaults.excluded_apps = excludedList;
             defaultsChanged = true;
         }
 

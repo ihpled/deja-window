@@ -309,9 +309,29 @@ export default class DejaWindowExtension extends Extension {
 
         const wmClass = window.get_wm_class();
         if (!wmClass) return null;
-        if ((this._globalDefaults.excluded_wm_classes || []).includes(wmClass)) return null;
+        if (this._isExcludedFromDefaults(window, wmClass)) return null;
 
         return { config: this._globalDefaults, identity: wmClass };
+    }
+
+    // Checks whether a window is excluded from Global Defaults via the
+    // excluded_apps rules, which mirror per-app config matching (match_mode
+    // 'wm_class'|'title', optional regex, 'wm_class' field holding the pattern).
+    _isExcludedFromDefaults(window, wmClass) {
+        const rules = this._globalDefaults.excluded_apps || [];
+        if (rules.length === 0) return false;
+
+        const title = window.get_title();
+        return rules.some(rule => {
+            const valueToCheck = (rule.match_mode === 'title') ? title : wmClass;
+            if (!valueToCheck) return false;
+            try {
+                return rule.is_regex ? new RegExp(rule.wm_class).test(valueToCheck) : rule.wm_class === valueToCheck;
+            } catch (e) {
+                console.error(`[DejaWindow] Invalid regex in excluded_apps: ${rule.wm_class}`, e);
+                return false;
+            }
+        });
     }
 
     // Helper to record a new WM_CLASS in the known-wm-classes setting
@@ -324,6 +344,19 @@ export default class DejaWindowExtension extends Extension {
             known.sort();
             this._settings.set_value('known-wm-classes', new GLib.Variant('as', known));
         }
+    }
+
+    // Helper to record a new window title in the known-window-titles setting
+    // (feeds the prefs pickers when match_mode is 'title'). Capped because,
+    // unlike WM_CLASSes, titles are unbounded (e.g. browser tab titles).
+    _recordTitle(title) {
+        if (!title) return;
+        let known = this._settings.get_value('known-window-titles').recursiveUnpack();
+        if (known.includes(title)) return;
+        if (known.length >= 200) return;
+        known.push(title);
+        known.sort();
+        this._settings.set_value('known-window-titles', new GLib.Variant('as', known));
     }
 
     // Helper to cleanup a window. Disconnects signals and removes timeout if pending.
@@ -377,9 +410,12 @@ export default class DejaWindowExtension extends Extension {
         // If we're already handling this window, exit early.
         if (this._handles.has(window)) return;
 
-        // Record class if available immediately
+        // Record class/title if available immediately
         if (window.get_wm_class()) {
             this._recordWmClass(window.get_wm_class());
+        }
+        if (window.get_title()) {
+            this._recordTitle(window.get_title());
         }
 
         // Try to setup immediately
@@ -397,6 +433,9 @@ export default class DejaWindowExtension extends Extension {
         const onPropChanged = () => {
             if (window.get_wm_class()) {
                 this._recordWmClass(window.get_wm_class());
+            }
+            if (window.get_title()) {
+                this._recordTitle(window.get_title());
             }
 
             if (this._checkAndSetup(window)) {

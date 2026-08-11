@@ -278,8 +278,9 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         group.add(inputRow);
 
-        // Populate with known classes
+        // Populate with known classes/titles (recorded by the extension side)
         const known = settings.get_value('known-wm-classes').recursiveUnpack();
+        const knownTitles = settings.get_value('known-window-titles').recursiveUnpack();
 
         // Opens a picker for a known WM_CLASS, filling targetEntry on selection.
         // GtkDropDown's popup is a separate xdg_popup Wayland surface, which on
@@ -288,8 +289,9 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // error, it just never opens). Adw.Dialog instead overlays in the same
         // window surface as Adw.MessageDialog, which is confirmed to work here,
         // so it's used for this picker too instead of chasing the popup bug.
-        const showKnownAppsPicker = (targetEntry) => {
-            if (known.length === 0) return;
+        // `items` lets callers choose which list to show (WM_CLASSes vs titles).
+        const showKnownAppsPicker = (targetEntry, items = known) => {
+            if (items.length === 0) return;
 
             const dialog = new Adw.Dialog({
                 title: 'Select a Known App',
@@ -310,10 +312,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 css_classes: ['boxed-list'],
                 margin_start: 12, margin_end: 12, margin_bottom: 12
             });
-            known.forEach(wmClass => {
-                const row = new Adw.ActionRow({ title: wmClass, activatable: true });
+            items.forEach(item => {
+                const row = new Adw.ActionRow({ title: item, activatable: true });
                 row.connect('activated', () => {
-                    targetEntry.set_text(wmClass);
+                    targetEntry.set_text(item);
                     dialog.close();
                 });
                 listBox.append(row);
@@ -368,13 +370,18 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         inputRow.add_suffix(entry);
 
-        if (known.length > 0) {
+        if (known.length > 0 || knownTitles.length > 0) {
             const pickAppButton = new Gtk.Button({
                 icon_name: 'view-list-symbolic',
                 valign: Gtk.Align.CENTER,
                 tooltip_text: 'Pick a known app'
             });
-            pickAppButton.connect('clicked', () => showKnownAppsPicker(entry));
+            // Shows WM_CLASSes or window titles depending on the match mode
+            // currently selected in the "Match Options" row above.
+            pickAppButton.connect('clicked', () => {
+                const items = modeCombo.get_active_id() === 'title' ? knownTitles : known;
+                showKnownAppsPicker(entry, items);
+            });
             inputRow.add_suffix(pickAppButton);
         }
 
@@ -646,13 +653,16 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             restore_sticky: false,
             avoid_overlap: true,
             locked: false,
-            excluded_wm_classes: []
+            excluded_apps: []
         };
 
         const getGlobalDefaults = () => {
             const json = settings.get_string('window-global-defaults');
             try {
-                return { ...DEFAULT_GLOBAL_DEFAULTS, ...(JSON.parse(json) || {}) };
+                const defaults = { ...DEFAULT_GLOBAL_DEFAULTS, ...(JSON.parse(json) || {}) };
+                // Drop the pre-excluded_apps key if still present in stored JSON.
+                delete defaults.excluded_wm_classes;
+                return defaults;
             } catch (e) {
                 console.error('Error parsing window-global-defaults:', e);
                 return { ...DEFAULT_GLOBAL_DEFAULTS };
@@ -676,21 +686,31 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             if (globalDefaultsSignalId) settings.unblock_signal_handler(globalDefaultsSignalId);
         };
 
-        // Used by the exclude list: a row needs to appear/disappear, so let the
-        // changed:: signal trigger a full section rebuild instead of blocking it.
-        const removeExcluded = (wmClass) => {
-            const defaults = getGlobalDefaults();
-            defaults.excluded_wm_classes = (defaults.excluded_wm_classes || []).filter(c => c !== wmClass);
+        // Excluded apps are stored as rule objects in excluded_apps
+        // ({wm_class: pattern, match_mode, is_regex}), mirroring per-app configs.
+        const getExcludedApps = (defaults) => [...(defaults.excluded_apps || [])];
+
+        const saveExcludedApps = (defaults, apps) => {
+            defaults.excluded_apps = apps;
             saveGlobalDefaults(defaults);
         };
 
-        const addExcluded = (wmClass) => {
+        // Used by the exclude list: a row needs to appear/disappear, so let the
+        // changed:: signal trigger a full section rebuild instead of blocking it.
+        const removeExcluded = (wmClass, matchMode, isRegex) => {
             const defaults = getGlobalDefaults();
-            const excluded = defaults.excluded_wm_classes || [];
-            if (!wmClass || excluded.includes(wmClass)) return;
-            excluded.push(wmClass);
-            defaults.excluded_wm_classes = excluded;
-            saveGlobalDefaults(defaults);
+            const apps = getExcludedApps(defaults).filter(a =>
+                !(a.wm_class === wmClass && (a.match_mode || 'wm_class') === (matchMode || 'wm_class') && !!a.is_regex === !!isRegex));
+            saveExcludedApps(defaults, apps);
+        };
+
+        const addExcluded = (wmClass, isRegex = false, matchMode = 'wm_class') => {
+            if (!wmClass) return;
+            const defaults = getGlobalDefaults();
+            const apps = getExcludedApps(defaults);
+            if (apps.some(a => a.wm_class === wmClass && (a.match_mode || 'wm_class') === matchMode && !!a.is_regex === !!isRegex)) return;
+            apps.push({ wm_class: wmClass, match_mode: matchMode, is_regex: isRegex });
+            saveExcludedApps(defaults, apps);
         };
 
         const globalDefaultsGroup = new Adw.PreferencesGroup({
@@ -705,26 +725,53 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         defaultsPage.add(excludeGroup);
 
+        // Mirrors the Applications tab's "Match Options" + "Window Identifier"
+        // pair, so exclusions can target window titles (optionally via regex)
+        // exactly like per-app rules do.
+        const excludeMatchRow = new Adw.ActionRow({
+            title: 'Match Options',
+            subtitle: 'Select matching mode and regex'
+        });
+        excludeGroup.add(excludeMatchRow);
+
+        const excludeModeCombo = new Gtk.ComboBoxText();
+        excludeModeCombo.append('wm_class', 'WM_CLASS');
+        excludeModeCombo.append('title', 'Window Title');
+        excludeModeCombo.set_active_id('wm_class');
+        excludeModeCombo.set_valign(Gtk.Align.CENTER);
+        excludeMatchRow.add_suffix(excludeModeCombo);
+
+        const excludeRegexCheck = new Gtk.CheckButton({
+            label: 'Regex',
+            valign: Gtk.Align.CENTER
+        });
+        excludeMatchRow.add_suffix(excludeRegexCheck);
+
         const excludeInputRow = new Adw.ActionRow({
-            title: 'Exclude an App',
-            subtitle: 'Enter its WM_CLASS'
+            title: 'Window Identifier',
+            subtitle: 'Enter WM_CLASS or Window Title\nIf enabled, you can use regex like "^DevTools.*"'
         });
         excludeGroup.add(excludeInputRow);
 
         const excludeEntry = new Gtk.Entry({
-            placeholder_text: 'WM_CLASS',
+            placeholder_text: 'WM_CLASS or Title',
             hexpand: true,
             valign: Gtk.Align.CENTER
         });
         excludeInputRow.add_suffix(excludeEntry);
 
-        if (known.length > 0) {
+        if (known.length > 0 || knownTitles.length > 0) {
             const pickExcludedAppButton = new Gtk.Button({
                 icon_name: 'view-list-symbolic',
                 valign: Gtk.Align.CENTER,
                 tooltip_text: 'Pick a known app'
             });
-            pickExcludedAppButton.connect('clicked', () => showKnownAppsPicker(excludeEntry));
+            // The picker shows WM_CLASSes or window titles depending on the
+            // currently selected match mode.
+            pickExcludedAppButton.connect('clicked', () => {
+                const items = excludeModeCombo.get_active_id() === 'title' ? knownTitles : known;
+                showKnownAppsPicker(excludeEntry, items);
+            });
             excludeInputRow.add_suffix(pickExcludedAppButton);
         }
 
@@ -737,8 +784,9 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         excludeAddButton.connect('clicked', () => {
             const text = excludeEntry.get_text().trim();
             if (text) {
-                addExcluded(text);
+                addExcluded(text, excludeRegexCheck.active, excludeModeCombo.get_active_id());
                 excludeEntry.set_text('');
+                excludeRegexCheck.active = false;
             }
         });
 
@@ -828,14 +876,18 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             addDefaultRow('Restore Always on Visible Workspace', null, 'restore_sticky', defaults.restore_sticky);
             addDefaultRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', defaults.avoid_overlap);
 
-            (defaults.excluded_wm_classes || []).forEach(wmClass => {
-                const excludedRow = new Adw.ActionRow({ title: wmClass });
+            getExcludedApps(defaults).forEach(rule => {
+                let title = rule.wm_class;
+                title += (rule.match_mode === 'title') ? ' (Title)' : ' (Class)';
+                if (rule.is_regex) title += ' [Regex]';
+
+                const excludedRow = new Adw.ActionRow({ title: title });
                 const removeBtn = new Gtk.Button({
                     icon_name: 'user-trash-symbolic',
                     css_classes: ['destructive-action'],
                     valign: Gtk.Align.CENTER
                 });
-                removeBtn.connect('clicked', () => removeExcluded(wmClass));
+                removeBtn.connect('clicked', () => removeExcluded(rule.wm_class, rule.match_mode, rule.is_regex));
                 excludedRow.add_suffix(removeBtn);
                 excludeGroup.add(excludedRow);
                 excludeRows.push(excludedRow);

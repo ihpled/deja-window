@@ -28,6 +28,13 @@
       <description>List of WM_CLASSes seen by the extension.</description>
     </key>
 
+    <!-- Known Window Titles (Array of strings) -->
+    <key name="known-window-titles" type="as">
+      <default>[]</default>
+      <summary>Known Window Titles</summary>
+      <description>List of window titles seen by the extension (used for pickers in prefs).</description>
+    </key>
+
     <!-- One-shot signal (JSON Object) set by the window menu's "Customize" action,
          consumed and cleared by prefs.js on next open. -->
     <!-- Format: {"wm_class": "...", "match_mode": "wm_class"|"title"} -->
@@ -67,10 +74,10 @@
         "restore_sticky": false,
         "avoid_overlap": true,
         "locked": false,
-        "excluded_wm_classes": []
+        "excluded_apps": []
       }'</default>
       <summary>Global default restore rules</summary>
-      <description>JSON object of restore_* flags applied to any NORMAL window without its own per-app config, plus a wm_class exclude list.</description>
+      <description>JSON object of restore_* flags applied to any NORMAL window without its own per-app config, plus an excluded_apps list of rules like {"wm_class": pattern, "match_mode": "wm_class"|"title", "is_regex": bool}.</description>
     </key>
 
   </schema>
