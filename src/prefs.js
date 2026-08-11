@@ -90,6 +90,163 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         indicatorRow.add_suffix(indicatorSwitch);
         indicatorGroup.add(indicatorRow);
 
+        // -- Backup & Restore Section --
+        // Exports/imports the user-defined rules (window-app-configs) and the
+        // Global Defaults (window-global-defaults) as a single JSON file.
+        // Saved window states are intentionally excluded: they're machine- and
+        // session-specific geometry, not user configuration.
+        const backupGroup = new Adw.PreferencesGroup({
+            title: 'Backup & Restore',
+            description: 'Export your application rules and Global Defaults to a file, or import them back.'
+        });
+        settingsPage.add(backupGroup);
+
+        const backupRow = new Adw.ActionRow({
+            title: 'Configuration File'
+        });
+        backupGroup.add(backupRow);
+
+        const exportButton = new Gtk.Button({
+            label: 'Export…',
+            valign: Gtk.Align.CENTER
+        });
+        backupRow.add_suffix(exportButton);
+
+        const importButton = new Gtk.Button({
+            label: 'Import…',
+            valign: Gtk.Align.CENTER
+        });
+        backupRow.add_suffix(importButton);
+
+        const showBackupError = (message) => {
+            const dialog = new Adw.MessageDialog({
+                heading: 'Import Failed',
+                body: message,
+                transient_for: window,
+                modal: true
+            });
+            dialog.add_response('ok', 'OK');
+            dialog.present();
+        };
+
+        exportButton.connect('clicked', () => {
+            const data = {
+                // Version marker so future format changes can be detected on import.
+                deja_window_backup: 1,
+                window_app_configs: getConfigs(),
+                window_global_defaults: getGlobalDefaults()
+            };
+
+            const dialog = new Gtk.FileDialog({
+                title: 'Export Configuration',
+                initial_name: 'deja-window-backup.json'
+            });
+            dialog.save(window, null, (_dlg, result) => {
+                try {
+                    const file = dialog.save_finish(result);
+                    if (!file) return;
+                    file.replace_contents(
+                        new TextEncoder().encode(JSON.stringify(data, null, 2)),
+                        null, false, Gio.FileCreateFlags.NONE, null);
+                } catch (e) {
+                    if (!e.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
+                        console.error('Export failed:', e);
+                }
+            });
+        });
+
+        importButton.connect('clicked', () => {
+            const dialog = new Gtk.FileDialog({ title: 'Import Configuration' });
+            const filter = new Gtk.FileFilter();
+            filter.add_pattern('*.json');
+            dialog.set_default_filter(filter);
+            dialog.open(window, null, (_dlg, result) => {
+                let file;
+                try {
+                    file = dialog.open_finish(result);
+                } catch (e) {
+                    if (!e.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
+                        console.error('Import failed:', e);
+                    return;
+                }
+                if (!file) return;
+
+                let data;
+                try {
+                    const [ok, bytes] = file.load_contents(null);
+                    if (!ok) throw new Error('Could not read file');
+                    data = JSON.parse(new TextDecoder().decode(bytes));
+                } catch (e) {
+                    showBackupError('The selected file is not a valid Deja Window backup.');
+                    return;
+                }
+
+                const importedConfigs = Array.isArray(data.window_app_configs) ? data.window_app_configs : null;
+                const importedDefaults = data.window_global_defaults && typeof data.window_global_defaults === 'object'
+                    ? data.window_global_defaults : null;
+                if (!importedConfigs && !importedDefaults) {
+                    showBackupError('The selected file does not contain any application rules or Global Defaults.');
+                    return;
+                }
+
+                // One dialog covers both choices: how to handle app rules
+                // (merge vs replace) and whether to also import Global Defaults.
+                const confirm = new Adw.MessageDialog({
+                    heading: 'Import Configuration',
+                    body: importedConfigs
+                        ? `The file contains ${importedConfigs.length} application rule(s).`
+                        : 'The file contains no application rules.',
+                    transient_for: window,
+                    modal: true
+                });
+
+                const defaultsCheck = new Gtk.CheckButton({
+                    label: 'Also import Global Defaults (replaces the current ones)',
+                    active: !!importedDefaults,
+                    sensitive: !!importedDefaults
+                });
+                confirm.set_extra_child(defaultsCheck);
+
+                confirm.add_response('cancel', 'Cancel');
+                if (importedConfigs) {
+                    confirm.add_response('merge', 'Add to Existing Rules');
+                    confirm.add_response('replace', 'Replace Existing Rules');
+                    confirm.set_response_appearance('replace', Adw.ResponseAppearance.DESTRUCTIVE);
+                    confirm.set_default_response('merge');
+                } else {
+                    confirm.add_response('merge', 'Import');
+                    confirm.set_default_response('merge');
+                }
+                confirm.set_close_response('cancel');
+
+                confirm.connect('response', (_dlg, response) => {
+                    if (response === 'cancel') return;
+
+                    if (importedConfigs) {
+                        if (response === 'replace') {
+                            saveConfigs(importedConfigs);
+                        } else {
+                            // Merge: imported rules win on identity conflicts
+                            // (same wm_class + match_mode), existing ones are kept otherwise.
+                            const existing = getConfigs();
+                            importedConfigs.forEach(imported => {
+                                const idx = existing.findIndex(c =>
+                                    c.wm_class === imported.wm_class &&
+                                    (c.match_mode || 'wm_class') === (imported.match_mode || 'wm_class'));
+                                if (idx >= 0) existing[idx] = imported;
+                                else existing.push(imported);
+                            });
+                            saveConfigs(existing);
+                        }
+                    }
+
+                    if (defaultsCheck.active && importedDefaults)
+                        saveGlobalDefaults({ ...getGlobalDefaults(), ...importedDefaults });
+                });
+                confirm.present();
+            });
+        });
+
         // -- Add New App Section --
 
         // Row 1: Match Settings

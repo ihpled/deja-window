@@ -55,9 +55,13 @@ export default class DejaWindowExtension extends Extension {
             }
         }, this);
 
-        // Listen for config changes using connectObject
+        // Listen for config changes using connectObject. As with Global Defaults
+        // below, a config change (e.g. rules added via the prefs Import feature)
+        // can newly qualify already-open windows, so adopt those too instead of
+        // only applying to windows opened from now on.
         this._settings.connectObject('changed::window-app-configs', () => {
             this._updateConfigs();
+            this._adoptUnmanagedWindows();
         }, this);
 
         // Listen for Global Defaults changes. Unlike window-app-configs, a defaults
