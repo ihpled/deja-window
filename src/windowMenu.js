@@ -149,7 +149,7 @@ export class DejaWindowMenu {
 
         // With Global Defaults enabled, an "Unmanaged" window isn't actually
         // untouched: it still gets managed via Global Defaults, so say so.
-        const unmanagedLabel = 'Unmanaged' + (globalDefaults.enabled ? ' (Global Defaults)' : '');
+        const unmanagedLabel = globalDefaults.enabled ? ' Managed by Global Defaults' : 'Unmanaged';
         addItem(unmanagedLabel, 'unmanaged', true);
         addItem('Excluded', 'excluded', !!wmClass);
     }
