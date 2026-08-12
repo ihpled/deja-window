@@ -61,25 +61,25 @@ Open the extension preferences to start managing your windows. Preferences are o
 2. **Regex Mode**:  
    * Check "Regex" if you want to match multiple windows with a pattern.  
    * Example: WM_CLASS mode with .\*ghostty.\* will match any window class containing "ghostty", Window Title mode with ^DevTools.\* will match Chrome DevTools window.  
-3. **Toggles**:  
-   * **Locked**: Freezes the currently saved layout, preventing window updates or changes from being saved. While it's on, the save button next to it snapshots the app's current window (position, size, monitor, workspace and states) as that fixed layout right away (you don't have to unlock, arrange the window, wait for the automatic save and lock again).
-   * **Restore Size**: App will open with the dimensions it had when last closed.  
-   * **Restore Position**: App will open at the exact X/Y coordinates it had when last closed (includes restoring to the correct monitor in multi-display setups).  
-   * **Restore Maximized**: App will open maximized if it was closed in that state.  
-   * **Restore Workspace**: App will open on the workspace it was last closed on.  
-   * **Switch to Workspace**: When the app opens, the desktop will automatically switch to that workspace.  
-   * **Restore Minimized**: App will open minimized if it was closed in that state.  
-   * **Restore Always on Top**: App will maintain its "Always on Top" status.  
-   * **Restore Always on Visible Workspace**: App will maintain its "Always on Visible Workspace" (sticky) status.
-   * **Avoid Overlap for Additional Windows**: If another window of this app is already sitting at the restored position, offsets this one diagonally so it doesn't land exactly on top of it. On by default.
-4. **Matching**: The first row of every rule shows what it matches and lets you change it afterwards — pattern, WM_CLASS vs Window Title, and regex on/off. A rule created from the window menu always starts as an exact class or title match, so this is how you turn it into a title or regex rule later without deleting it: the rule keeps all its options, and its saved window state follows the new pattern. The only thing not allowed is an identity another rule already uses.
-5. **Enabling/Disabling a Rule**: Each rule has its own switch, separate from the delete button. Turning it off has the same effect as removing it — the window is left unmanaged — but its customization is kept and comes right back when you turn it back on.
+3. **Matching**: The first row of every rule shows what it matches and lets you change it afterwards — pattern, WM_CLASS vs Window Title, and regex on/off. A rule created from the window menu always starts as an exact class or title match, so this is how you turn it into a title or regex rule later without deleting it: the rule keeps all its options, and its saved window state follows the new pattern. The only thing not allowed is an identity another rule already uses.
+4. **Restore**: One expander holding everything the rule restores — laid out like the window menu's own Restore section. Collapsed, it summarizes what's on (*"Size, Position, Workspace"*, *"Everything"*, or *"Nothing"*), so you can read a rule at a glance without opening it. An option that only refines another one is greyed out while its parent is off.
+   * **Size**: App will open with the dimensions it had when last closed.  
+   * **Position**: App will open at the exact X/Y coordinates it had when last closed (includes restoring to the correct monitor in multi-display setups).  
+   * **Avoid Overlap for Additional Windows**: If another window of this app is already sitting at the restored position, offsets this one diagonally so it doesn't land exactly on top of it. Refines *Position*; on by default.
+   * **Maximized**: App will open maximized if it was closed in that state.  
+   * **Workspace**: App will open on the workspace it was last closed on.  
+   * **Switch to Workspace**: When the app opens, the desktop will automatically switch to that workspace. Refines *Workspace*.
+   * **Minimized**: App will open minimized if it was closed in that state.  
+   * **Always on Top**: App will maintain its "Always on Top" status.  
+   * **On All Workspaces**: App will maintain its "Always on Visible Workspace" (sticky) status.
+5. **Locked**: Freezes the currently saved layout, preventing window updates or changes from being saved. While it's on, the save button next to it snapshots the app's current window (position, size, monitor, workspace and states) as that fixed layout right away (you don't have to unlock, arrange the window, wait for the automatic save and lock again).
+6. **Enabling/Disabling a Rule**: Each rule has its own switch, separate from the delete button. Turning it off has the same effect as removing it — the window is left unmanaged — but its customization is kept and comes right back when you turn it back on.
 
 ### **Global Defaults tab (Experimental)**
 
 Rules applied automatically to every *normal* window that doesn't already match a rule in the Applications tab. Explicit per-app rules always take priority.
 
-* Has the same toggles as a per-app rule, minus **Locked**: pinning one fixed layout for every app that has no rule of its own isn't meaningful.
+* Has the same **Restore** section as a per-app rule, minus **Locked**: pinning one fixed layout for every app that has no rule of its own isn't meaningful.
 * Turning it on is gated behind a confirmation dialog, since it changes the risk model for every installed app at once rather than one app you've already tested.
 * **Excluded Apps**: WM_CLASS values that should never be touched by Global Defaults, even while it's enabled.
 

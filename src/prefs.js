@@ -5,6 +5,52 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+// The restore options, in the order they're shown, shared by per-app rules and
+// Global Defaults — the same set and the same short labels as the window menu's
+// "Restore" section (see windowMenu.js RESTORE_TOGGLES), since both edit the
+// same fields. 'dependsOn' marks an option that only refines another one: it's
+// greyed out while its parent is off, and left out of the section's summary so
+// that stays a list of what actually gets restored.
+const RESTORE_OPTIONS = [
+    { key: 'restore_size', label: 'Size' },
+    { key: 'restore_pos', label: 'Position' },
+    {
+        key: 'avoid_overlap',
+        label: 'Avoid Overlap for Additional Windows',
+        subtitle: 'Offset this window when another one of the same app already sits at the restored position',
+        dependsOn: 'restore_pos',
+        defaultOn: true,
+    },
+    { key: 'restore_maximized', label: 'Maximized' },
+    { key: 'restore_workspace', label: 'Workspace' },
+    {
+        key: 'switch_to_workspace',
+        label: 'Switch to Workspace',
+        subtitle: 'Activate the workspace where the window is restored',
+        dependsOn: 'restore_workspace',
+    },
+    { key: 'restore_minimized', label: 'Minimized' },
+    { key: 'restore_above', label: 'Always on Top' },
+    { key: 'restore_sticky', label: 'On All Workspaces' },
+];
+
+// Keeps the collapsed "Restore" row informative: what this rule actually
+// restores, or why it does nothing.
+const MAX_RESTORE_SUMMARY = 52;
+
+function restoreSummary(values) {
+    const primary = RESTORE_OPTIONS.filter(option => !option.dependsOn);
+    const active = primary.filter(option => !!values[option.key]);
+
+    if (active.length === 0) return 'Nothing — the window is tracked but never restored';
+    if (active.length === primary.length) return 'Everything';
+
+    const text = active.map(option => option.label).join(', ');
+    return text.length > MAX_RESTORE_SUMMARY
+        ? `${text.slice(0, MAX_RESTORE_SUMMARY - 1)}…`
+        : text;
+}
+
 /**
  * DejaWindowPreferences Class
  * 
@@ -436,6 +482,49 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             return sw;
         };
 
+        // Builds the "Restore" block shared by per-app rules and Global
+        // Defaults: one expander holding every restore option, so both places
+        // read the same way as the window menu instead of a flat wall of
+        // switches. `values` supplies the current state, `onChange(key, value)`
+        // persists a single field. Returns the expander; it keeps its own
+        // subtitle and the greying of dependent options in sync.
+        const buildRestoreSection = (values, onChange) => {
+            const expander = new Adw.ExpanderRow({
+                title: 'Restore',
+                subtitle: restoreSummary(values),
+            });
+
+            const switches = {};
+            const optionRows = [];
+
+            const sync = () => {
+                expander.set_subtitle(restoreSummary(values));
+                optionRows.forEach(({ row, dependsOn }) => {
+                    row.sensitive = !dependsOn || switches[dependsOn].active;
+                });
+            };
+
+            RESTORE_OPTIONS.forEach(option => {
+                const initial = values[option.key] !== undefined
+                    ? !!values[option.key]
+                    : !!option.defaultOn;
+
+                let optionRow;
+                switches[option.key] = makeSwitchRow(
+                    r => { optionRow = r; expander.add_row(r); },
+                    option.label, option.subtitle || null, initial,
+                    value => {
+                        values[option.key] = value;
+                        onChange(option.key, value);
+                        sync();
+                    });
+                optionRows.push({ row: optionRow, dependsOn: option.dependsOn });
+            });
+
+            sync();
+            return expander;
+        };
+
         // Update helper to identify config by both wm_class and match_mode if possible.
         // But the previous implementation assumed wm_class uniqueness.
         // We really should pass the config index or object itself if we could, but these helpers are convenient.
@@ -839,7 +928,12 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 });
                 captureButton.connect('clicked', () => requestCapture(config.wm_class, config.match_mode));
 
-                const lockedSwitch = addAppRow('Locked - window updates/changes are not saved', null,
+                const restoreSection = buildRestoreSection(config,
+                    (key, value) => updateConfig(config.wm_class, config.match_mode, key, value));
+                row.add_row(restoreSection);
+                detailRows.push(restoreSection);
+
+                const lockedSwitch = addAppRow('Locked', 'Freeze the saved state: window changes are no longer recorded',
                     'locked', config.locked || false, captureButton);
 
                 // Only offered while the rule is locked: without the lock the very
@@ -849,16 +943,6 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 lockedSwitch.connect('notify::active', () => {
                     captureButton.sensitive = lockedSwitch.active;
                 });
-                addAppRow('Restore Size', null, 'restore_size', config.restore_size);
-                addAppRow('Restore Position', null, 'restore_pos', config.restore_pos);
-                addAppRow('Restore Maximized', null, 'restore_maximized', config.restore_maximized || false);
-                addAppRow('Restore Workspace', null, 'restore_workspace', config.restore_workspace || false);
-                addAppRow('Switch to Workspace', 'Activate the workspace where the window is restored',
-                    'switch_to_workspace', config.switch_to_workspace || false);
-                addAppRow('Restore Minimized', null, 'restore_minimized', config.restore_minimized || false);
-                addAppRow('Restore Always on Top', null, 'restore_above', config.restore_above || false);
-                addAppRow('Restore Always on Visible Workspace', null, 'restore_sticky', config.restore_sticky || false);
-                addAppRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', config.avoid_overlap !== false);
 
                 detailRows.forEach(r => { r.sensitive = enabledSwitch.active; });
                 enabledSwitch.connect('notify::active', () => {
@@ -1143,23 +1227,12 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             globalDefaultsGroup.add(enabledRow);
             globalDefaultsRows.push(enabledRow);
 
-            const addDefaultRow = (title, subtitle, key, initialValue) => {
-                makeSwitchRow(r => {
-                    globalDefaultsGroup.add(r);
-                    globalDefaultsRows.push(r);
-                }, title, subtitle, initialValue, value => updateGlobalDefaults(key, value));
-            };
-
-            addDefaultRow('Restore Size', null, 'restore_size', defaults.restore_size);
-            addDefaultRow('Restore Position', null, 'restore_pos', defaults.restore_pos);
-            addDefaultRow('Restore Maximized', null, 'restore_maximized', defaults.restore_maximized);
-            addDefaultRow('Restore Workspace', null, 'restore_workspace', defaults.restore_workspace);
-            addDefaultRow('Switch to Workspace', 'Activate the workspace where the window is restored',
-                'switch_to_workspace', defaults.switch_to_workspace);
-            addDefaultRow('Restore Minimized', null, 'restore_minimized', defaults.restore_minimized);
-            addDefaultRow('Restore Always on Top', null, 'restore_above', defaults.restore_above);
-            addDefaultRow('Restore Always on Visible Workspace', null, 'restore_sticky', defaults.restore_sticky);
-            addDefaultRow('Avoid Overlap for Additional Windows', null, 'avoid_overlap', defaults.avoid_overlap);
+            // Same "Restore" block as a per-app rule, so both surfaces read
+            // identically — and identically to the window menu.
+            const restoreSection = buildRestoreSection(defaults,
+                (key, value) => updateGlobalDefaults(key, value));
+            globalDefaultsGroup.add(restoreSection);
+            globalDefaultsRows.push(restoreSection);
 
             getExcludedApps(defaults).forEach(rule => {
                 let title = rule.wm_class;
