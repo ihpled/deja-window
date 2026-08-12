@@ -73,6 +73,39 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         const iconsPath = GLib.build_filenamev([this.path, 'icons']);
         Gtk.IconTheme.get_for_display(window.get_display()).add_search_path(iconsPath);
 
+        // Fixes the arrow of a nested Adw.ExpanderRow (the per-rule "Restore"
+        // section inside a rule's own expander). Adwaita rotates the arrow with
+        // a *descendant* selector — `row.expander:checked image.expander-row-arrow`
+        // — so expanding the outer rule row also paints every arrow below it as
+        // expanded (rotated + accent-coloured), whatever the inner row's real
+        // state is. Restore the collapsed look for any expander row that isn't
+        // itself checked; the extra `row.expander` ancestor plus `:not(:checked)`
+        // outweighs Adwaita's rule on specificity, so it only ever applies to
+        // nested, collapsed rows.
+        const display = window.get_display();
+        const arrowFixProvider = new Gtk.CssProvider();
+        const arrowFixCss = `
+            row.expander row.expander:not(:checked) image.expander-row-arrow {
+                color: inherit;
+                opacity: 0.55;
+            }
+            row.expander row.expander:not(:checked) image.expander-row-arrow:dir(ltr) {
+                -gtk-icon-transform: rotate(0.5turn);
+            }
+            row.expander row.expander:not(:checked) image.expander-row-arrow:dir(rtl) {
+                -gtk-icon-transform: rotate(-0.5turn);
+            }
+        `;
+        // load_from_string only exists from GTK 4.12 on; GNOME 46's GTK 4.14 has
+        // it, but keep the byte-based fallback for the older end of the range.
+        if (arrowFixProvider.load_from_string) {
+            arrowFixProvider.load_from_string(arrowFixCss);
+        } else {
+            arrowFixProvider.load_from_data(new TextEncoder().encode(arrowFixCss), -1);
+        }
+        Gtk.StyleContext.add_provider_for_display(
+            display, arrowFixProvider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+
         const settings = this.getSettings();
         const page = new Adw.PreferencesPage({
             title: 'Applications',
@@ -1280,6 +1313,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 captureSignalId = null;
             }
             cancelCaptureTimeout();
+            Gtk.StyleContext.remove_provider_for_display(display, arrowFixProvider);
             rows = [];
             globalDefaultsRows = [];
             excludeRows = [];
