@@ -54,12 +54,13 @@ Open the extension preferences to start managing your windows. Preferences are o
 
 ### **Applications tab**
 
-1. **Add New Windows**:  
-   * Enter the WM_CLASS or Window Title of the window you want to manage.  
-   * You can find the class name or title in the dropdown (the extension auto-discovers running apps) or by using Alt+F2 and typing lg (Looking Glass) > Windows.  
+1. **Add New Windows**: The form at the top of the tab is the same **Match By / Regular Expression / Pattern** block used to edit a rule later (see *Matching* below), plus the **+** button that creates the rule.
+   * Pick **Match By**: WM_CLASS or Window Title.
+   * Enter the pattern of the window you want to manage.  
+   * You can find the class name or title with the list button next to the pattern (the extension auto-discovers running apps and window titles) or by using Alt+F2 and typing lg (Looking Glass) > Windows.  
    * Example: com.mitchellh.ghostty or org.gnome.TextEditor.  
 2. **Regex Mode**:  
-   * Check "Regex" if you want to match multiple windows with a pattern.  
+   * Turn on "Regular Expression" if you want to match multiple windows with a pattern.  
    * Example: WM_CLASS mode with .\*ghostty.\* will match any window class containing "ghostty", Window Title mode with ^DevTools.\* will match Chrome DevTools window.  
 3. **Matching**: The first row of every rule shows what it matches and lets you change it afterwards — pattern, WM_CLASS vs Window Title, and regex on/off. A rule created from the window menu always starts as an exact class or title match, so this is how you turn it into a title or regex rule later without deleting it: the rule keeps all its options, and its saved window state follows the new pattern. The only thing not allowed is an identity another rule already uses.
 4. **Restore**: One expander holding everything the rule restores — laid out like the window menu's own Restore section. Collapsed, it summarizes what's on (*"Size, Position, Workspace"*, *"Everything"*, or *"Nothing"*), so you can read a rule at a glance without opening it. An option that only refines another one is greyed out while its parent is off.
@@ -81,7 +82,7 @@ Rules applied automatically to every *normal* window that doesn't already match 
 
 * Has the same **Restore** section as a per-app rule, minus **Locked**: pinning one fixed layout for every app that has no rule of its own isn't meaningful.
 * Turning it on is gated behind a confirmation dialog, since it changes the risk model for every installed app at once rather than one app you've already tested.
-* **Excluded Apps**: WM_CLASS values that should never be touched by Global Defaults, even while it's enabled.
+* **Excluded Apps**: windows that should never be touched by Global Defaults, even while it's enabled. They are described with the same **Match By / Regular Expression / Pattern** block as a rule, so an exclusion can target a WM_CLASS or a window title, exactly or by regex.
 
 ### **Settings tab**
 

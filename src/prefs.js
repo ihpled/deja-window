@@ -330,35 +330,6 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
 
         // -- Add New App Section --
 
-        // Row 1: Match Settings
-        const matchRow = new Adw.ActionRow({
-            title: 'Match Options',
-            subtitle: 'Select matching mode and regex'
-        });
-        group.add(matchRow);
-
-        // Match Mode Selector
-        const modeCombo = new Gtk.ComboBoxText();
-        modeCombo.append('wm_class', 'WM_CLASS');
-        modeCombo.append('title', 'Window Title');
-        modeCombo.set_active_id('wm_class');
-        modeCombo.set_valign(Gtk.Align.CENTER);
-        matchRow.add_suffix(modeCombo);
-
-        // Regex Checkbox
-        const regexCheck = new Gtk.CheckButton({
-            label: 'Regex',
-            valign: Gtk.Align.CENTER
-        });
-        matchRow.add_suffix(regexCheck);
-
-        // Row 2: Input and Add Button
-        const inputRow = new Adw.ActionRow({
-            title: 'Window Identifier',
-            subtitle: 'Enter WM_CLASS or Window Title\nIf enabled, you can use regex like "^DevTools.*"'
-        });
-        group.add(inputRow);
-
         // Populate with known classes/titles (recorded by the extension side)
         const known = settings.get_value('known-wm-classes').recursiveUnpack();
         const knownTitles = settings.get_value('known-window-titles').recursiveUnpack();
@@ -444,34 +415,98 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             });
         };
 
-        const entry = new Gtk.Entry({
-            placeholder_text: 'WM_CLASS or Title',
-            hexpand: true,
-            valign: Gtk.Align.CENTER
-        });
-        inputRow.add_suffix(entry);
-
-        if (known.length > 0 || knownTitles.length > 0) {
-            const pickAppButton = new Gtk.Button({
-                icon_name: 'view-list-symbolic',
+        // The "Matching" block — Match By / Regular Expression / Pattern — used
+        // by every surface that describes what a rule matches: the Applications
+        // tab's add form, the Global Defaults exclude form and a rule's "Edit
+        // Matching" dialog. One builder so creating a rule and editing one later
+        // read the same way, with the same wording and the same picker. Rows are
+        // appended to `group`; the returned patternRow lets callers pack an extra
+        // button (Add) next to the entry, and reset() clears the form after use.
+        const buildMatchingRows = (targetGroup, { pattern = '', mode = 'wm_class', isRegex = false } = {}) => {
+            // Two linked toggles instead of a Gtk.ComboBoxText: with only two
+            // modes both are visible at a glance and switching takes one click.
+            // It also avoids the combo's popup, whose pointer grab swallowed the
+            // first click on the pattern row's buttons when the mode had just
+            // been changed — the click only dismissed the closing popup.
+            const modeRow = new Adw.ActionRow({ title: 'Match By' });
+            const modeBox = new Gtk.Box({
                 valign: Gtk.Align.CENTER,
-                tooltip_text: 'Pick a known app'
+                css_classes: ['linked']
             });
-            // Shows WM_CLASSes or window titles depending on the match mode
-            // currently selected in the "Match Options" row above.
-            pickAppButton.connect('clicked', () => {
-                const items = modeCombo.get_active_id() === 'title' ? knownTitles : known;
-                showKnownAppsPicker(entry, items);
+            const classToggle = new Gtk.ToggleButton({
+                label: 'WM_CLASS',
+                active: mode !== 'title'
             });
-            inputRow.add_suffix(pickAppButton);
-        }
+            const titleToggle = new Gtk.ToggleButton({
+                label: 'Window Title',
+                group: classToggle,
+                active: mode === 'title'
+            });
+            modeBox.append(classToggle);
+            modeBox.append(titleToggle);
+            modeRow.add_suffix(modeBox);
+            targetGroup.add(modeRow);
+
+            const regexRow = new Adw.ActionRow({
+                title: 'Regular Expression',
+                subtitle: 'Treat the pattern as a regex, e.g. "^DevTools.*"'
+            });
+            const regexSwitch = new Gtk.Switch({
+                active: !!isRegex,
+                valign: Gtk.Align.CENTER
+            });
+            regexRow.add_suffix(regexSwitch);
+            targetGroup.add(regexRow);
+
+            const patternRow = new Adw.ActionRow({ title: 'Pattern' });
+            const patternEntry = new Gtk.Entry({
+                text: pattern,
+                placeholder_text: 'WM_CLASS or Title',
+                hexpand: true,
+                valign: Gtk.Align.CENTER
+            });
+            patternRow.add_suffix(patternEntry);
+
+            const getMode = () => titleToggle.active ? 'title' : 'wm_class';
+
+            if (known.length > 0 || knownTitles.length > 0) {
+                const pickButton = new Gtk.Button({
+                    icon_name: 'view-list-symbolic',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Pick a known app'
+                });
+                // Shows WM_CLASSes or window titles, following the mode picked
+                // in the row above.
+                pickButton.connect('clicked', () => {
+                    showKnownAppsPicker(patternEntry,
+                        getMode() === 'title' ? knownTitles : known);
+                });
+                patternRow.add_suffix(pickButton);
+            }
+            targetGroup.add(patternRow);
+
+            return {
+                patternRow,
+                patternEntry,
+                regexSwitch,
+                getMode,
+                reset: () => {
+                    patternEntry.set_text('');
+                    regexSwitch.active = false;
+                    classToggle.active = true;
+                }
+            };
+        };
+
+        const addMatching = buildMatchingRows(group);
 
         const addButton = new Gtk.Button({
             icon_name: 'list-add-symbolic',
             valign: Gtk.Align.CENTER,
-            css_classes: ['suggested-action']
+            css_classes: ['suggested-action'],
+            tooltip_text: 'Add this rule'
         });
-        inputRow.add_suffix(addButton);
+        addMatching.patternRow.add_suffix(addButton);
 
         // State used by functions
         let rows = [];
@@ -650,11 +685,22 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             saveConfigs(configs);
         };
 
+        // Returns null on success, or a reason string for the caller to report —
+        // same contract as updateConfigMatching, so creating a rule rejects the
+        // same input the "Edit Matching" dialog would.
         const addConfig = (wmClass, isRegex = false, matchMode = 'wm_class') => {
+            if (isRegex) {
+                try {
+                    new RegExp(wmClass);
+                } catch (e) {
+                    return `Invalid regular expression: ${e.message}`;
+                }
+            }
+
             const configs = getConfigs();
             // Check uniqueness based on both value and mode
-            if (configs.find(c => c.wm_class === wmClass && c.match_mode === matchMode)) {
-                return; // Already exists
+            if (configs.find(c => c.wm_class === wmClass && (c.match_mode || 'wm_class') === matchMode)) {
+                return 'A rule already matches that';
             }
             configs.push({
                 wm_class: wmClass, // Acts as the pattern/value
@@ -673,20 +719,25 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 locked: false
             });
             saveConfigs(configs);
+            return null;
         };
 
         const onAddClicked = () => {
-            const text = entry.get_text().trim();
-            if (text) {
-                addConfig(text, regexCheck.active, modeCombo.get_active_id());
-                entry.set_text('');
-                regexCheck.active = false;
-                // Reset mode to default if desired, or keep last selection
+            const text = addMatching.patternEntry.get_text().trim();
+            if (!text) return;
+
+            const error = addConfig(text, addMatching.regexSwitch.active, addMatching.getMode());
+            if (error) {
+                // Leave the form filled in so the pattern can be corrected.
+                showToast(error);
+                return;
             }
+            addMatching.reset();
         };
 
         // Connect Add Button
         addButton.connect('clicked', onAddClicked);
+        addMatching.patternEntry.connect('activate', onAddClicked);
 
         // -- "Save current window state" plumbing --
         // This process has no access to Meta windows, so the per-rule capture
@@ -794,57 +845,23 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 description: ''
             });
 
-            const modeRow = new Adw.ActionRow({ title: 'Match By' });
-            const dialogModeCombo = new Gtk.ComboBoxText({ valign: Gtk.Align.CENTER });
-            dialogModeCombo.append('wm_class', 'WM_CLASS');
-            dialogModeCombo.append('title', 'Window Title');
-            dialogModeCombo.set_active_id(oldMode);
-            modeRow.add_suffix(dialogModeCombo);
-            editGroup.add(modeRow);
-
-            const regexRow = new Adw.ActionRow({
-                title: 'Regular Expression',
-                subtitle: 'Treat the pattern as a regex, e.g. "^DevTools.*"'
+            const matching = buildMatchingRows(editGroup, {
+                pattern: oldPattern,
+                mode: oldMode,
+                isRegex: config.is_regex
             });
-            const regexSwitch = new Gtk.Switch({
-                active: !!config.is_regex,
-                valign: Gtk.Align.CENTER
-            });
-            regexRow.add_suffix(regexSwitch);
-            editGroup.add(regexRow);
-
-            const patternRow = new Adw.ActionRow({ title: 'Pattern' });
-            const patternEntry = new Gtk.Entry({
-                text: oldPattern,
-                hexpand: true,
-                valign: Gtk.Align.CENTER
-            });
-            patternRow.add_suffix(patternEntry);
-
-            if (known.length > 0 || knownTitles.length > 0) {
-                const pickButton = new Gtk.Button({
-                    icon_name: 'view-list-symbolic',
-                    valign: Gtk.Align.CENTER,
-                    tooltip_text: 'Pick a known app'
-                });
-                pickButton.connect('clicked', () => {
-                    const items = dialogModeCombo.get_active_id() === 'title' ? knownTitles : known;
-                    showKnownAppsPicker(patternEntry, items);
-                });
-                patternRow.add_suffix(pickButton);
-            }
-            editGroup.add(patternRow);
 
             const apply = () => {
-                const newPattern = patternEntry.get_text().trim();
-                const newMode = dialogModeCombo.get_active_id() || 'wm_class';
+                const newPattern = matching.patternEntry.get_text().trim();
+                const newMode = matching.getMode();
 
                 // Set before the write: saving triggers the list rebuild through
                 // the settings handler, which may run before this returns, and
                 // that rebuild is what consumes the target.
                 expandTarget = { wm_class: newPattern, match_mode: newMode };
 
-                const error = updateConfigMatching(oldPattern, oldMode, newPattern, newMode, regexSwitch.active);
+                const error = updateConfigMatching(oldPattern, oldMode, newPattern, newMode,
+                    matching.regexSwitch.active);
                 if (error) {
                     // Keep the dialog open so the entry can be corrected.
                     expandTarget = null;
@@ -855,7 +872,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             };
 
             saveButton.connect('clicked', apply);
-            patternEntry.connect('activate', apply);
+            matching.patternEntry.connect('activate', apply);
             cancelButton.connect('clicked', () => dialog.close());
 
             const toolbarView = new Adw.ToolbarView();
@@ -1107,13 +1124,27 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             saveExcludedApps(defaults, apps);
         };
 
+        // Same null-or-reason contract as addConfig, so a bad pattern is reported
+        // here the way it is on the Applications tab instead of silently doing
+        // nothing.
         const addExcluded = (wmClass, isRegex = false, matchMode = 'wm_class') => {
-            if (!wmClass) return;
+            if (!wmClass) return 'The pattern cannot be empty';
+
+            if (isRegex) {
+                try {
+                    new RegExp(wmClass);
+                } catch (e) {
+                    return `Invalid regular expression: ${e.message}`;
+                }
+            }
+
             const defaults = getGlobalDefaults();
             const apps = getExcludedApps(defaults);
-            if (apps.some(a => a.wm_class === wmClass && (a.match_mode || 'wm_class') === matchMode && !!a.is_regex === !!isRegex)) return;
+            if (apps.some(a => a.wm_class === wmClass && (a.match_mode || 'wm_class') === matchMode && !!a.is_regex === !!isRegex))
+                return 'That app is already excluded';
             apps.push({ wm_class: wmClass, match_mode: matchMode, is_regex: isRegex });
             saveExcludedApps(defaults, apps);
+            return null;
         };
 
         const globalDefaultsGroup = new Adw.PreferencesGroup({
@@ -1128,70 +1159,34 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         });
         defaultsPage.add(excludeGroup);
 
-        // Mirrors the Applications tab's "Match Options" + "Window Identifier"
-        // pair, so exclusions can target window titles (optionally via regex)
-        // exactly like per-app rules do.
-        const excludeMatchRow = new Adw.ActionRow({
-            title: 'Match Options',
-            subtitle: 'Select matching mode and regex'
-        });
-        excludeGroup.add(excludeMatchRow);
-
-        const excludeModeCombo = new Gtk.ComboBoxText();
-        excludeModeCombo.append('wm_class', 'WM_CLASS');
-        excludeModeCombo.append('title', 'Window Title');
-        excludeModeCombo.set_active_id('wm_class');
-        excludeModeCombo.set_valign(Gtk.Align.CENTER);
-        excludeMatchRow.add_suffix(excludeModeCombo);
-
-        const excludeRegexCheck = new Gtk.CheckButton({
-            label: 'Regex',
-            valign: Gtk.Align.CENTER
-        });
-        excludeMatchRow.add_suffix(excludeRegexCheck);
-
-        const excludeInputRow = new Adw.ActionRow({
-            title: 'Window Identifier',
-            subtitle: 'Enter WM_CLASS or Window Title\nIf enabled, you can use regex like "^DevTools.*"'
-        });
-        excludeGroup.add(excludeInputRow);
-
-        const excludeEntry = new Gtk.Entry({
-            placeholder_text: 'WM_CLASS or Title',
-            hexpand: true,
-            valign: Gtk.Align.CENTER
-        });
-        excludeInputRow.add_suffix(excludeEntry);
-
-        if (known.length > 0 || knownTitles.length > 0) {
-            const pickExcludedAppButton = new Gtk.Button({
-                icon_name: 'view-list-symbolic',
-                valign: Gtk.Align.CENTER,
-                tooltip_text: 'Pick a known app'
-            });
-            // The picker shows WM_CLASSes or window titles depending on the
-            // currently selected match mode.
-            pickExcludedAppButton.connect('clicked', () => {
-                const items = excludeModeCombo.get_active_id() === 'title' ? knownTitles : known;
-                showKnownAppsPicker(excludeEntry, items);
-            });
-            excludeInputRow.add_suffix(pickExcludedAppButton);
-        }
+        // The same "Matching" block as the Applications tab and the per-rule
+        // editor, so an exclusion is described exactly like the rule it mirrors
+        // — window class or title, optionally as a regex.
+        const excludeMatching = buildMatchingRows(excludeGroup);
 
         const excludeAddButton = new Gtk.Button({
             icon_name: 'list-add-symbolic',
             valign: Gtk.Align.CENTER,
-            css_classes: ['suggested-action']
+            css_classes: ['suggested-action'],
+            tooltip_text: 'Add this exclusion'
         });
-        excludeInputRow.add_suffix(excludeAddButton);
-        excludeAddButton.connect('clicked', () => {
-            const text = excludeEntry.get_text().trim();
-            if (text) {
-                addExcluded(text, excludeRegexCheck.active, excludeModeCombo.get_active_id());
-                excludeEntry.set_text('');
-                excludeRegexCheck.active = false;
+        excludeMatching.patternRow.add_suffix(excludeAddButton);
+
+        const onExcludeAddClicked = () => {
+            const text = excludeMatching.patternEntry.get_text().trim();
+            if (!text) return;
+
+            const error = addExcluded(text, excludeMatching.regexSwitch.active, excludeMatching.getMode());
+            if (error) {
+                // Leave the form filled in so the pattern can be corrected.
+                showToast(error);
+                return;
             }
-        });
+            excludeMatching.reset();
+        };
+
+        excludeAddButton.connect('clicked', onExcludeAddClicked);
+        excludeMatching.patternEntry.connect('activate', onExcludeAddClicked);
 
         let globalDefaultsRows = [];
         let excludeRows = [];
