@@ -21,7 +21,7 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
 * **Layout Locking**: Freeze a window's saved layout to maintain your perfect configuration, preventing accidental updates when temporarily moving or resizing windows.
 * **Smart Centering**: Automatically centers windows that are configured but haven't been saved yet.  
 * **Global Defaults (Experimental)**: Optionally manage every normal window that doesn't already have its own rule, with independent restore toggles and its own exclude list for apps that should never be touched by it.
-* **Window Menu Quick Actions**: Right-click a window's title bar (or press Super+Space) for a "Deja Window" submenu to manage it by class or title, exclude it, or jump straight to its rule in Preferences.
+* **Window Menu Rule Editor**: Right-click a window's title bar (or press Super+Space) for a "Deja Window" submenu holding the window's whole rule as switches — match by class or title, every restore option, lock, exclude — so it can be configured on the spot, without opening Preferences.
 * **Non-Destructive Rule Toggling**: Turn a rule off — from Preferences or from the window menu — without deleting it. Its customization is kept and restored the moment you turn it back on.
 * **Top Bar Indicator**: An optional icon in the top bar for quick access to Preferences and to pause/resume Deja Window without disabling the extension itself.
 * **Wayland Ready**: Handles the specific timing constraints of window management on Wayland.
@@ -72,7 +72,8 @@ Open the extension preferences to start managing your windows. Preferences are o
    * **Restore Always on Top**: App will maintain its "Always on Top" status.  
    * **Restore Always on Visible Workspace**: App will maintain its "Always on Visible Workspace" (sticky) status.
    * **Avoid Overlap for Additional Windows**: If another window of this app is already sitting at the restored position, offsets this one diagonally so it doesn't land exactly on top of it. On by default.
-4. **Enabling/Disabling a Rule**: Each rule has its own switch, separate from the delete button. Turning it off has the same effect as removing it — the window is left unmanaged — but its customization is kept and comes right back when you turn it back on.
+4. **Matching**: The first row of every rule shows what it matches and lets you change it afterwards — pattern, WM_CLASS vs Window Title, and regex on/off. A rule created from the window menu always starts as an exact class or title match, so this is how you turn it into a title or regex rule later without deleting it: the rule keeps all its options, and its saved window state follows the new pattern. The only thing not allowed is an identity another rule already uses.
+5. **Enabling/Disabling a Rule**: Each rule has its own switch, separate from the delete button. Turning it off has the same effect as removing it — the window is left unmanaged — but its customization is kept and comes right back when you turn it back on.
 
 ### **Global Defaults tab (Experimental)**
 
@@ -87,14 +88,20 @@ Rules applied automatically to every *normal* window that doesn't already match 
 * **Enabled**: The master switch for Deja Window. When off, the extension stays installed and active but all window tracking, restoring and saving is bypassed.
 * **Show Icon in Top Bar**: Adds an indicator to the top bar with quick access to Preferences and to the Enabled switch above.
 
-## **🖱️ Window Menu Quick Actions**
+## **🖱️ Window Menu Rule Editor**
 
-Right-click a window's title bar (or press Super+Space) to open GNOME's window menu. Deja Window adds a **"Deja Window"** submenu there for quick, per-window changes without having to open Preferences:
+Right-click a window's title bar (or press Super+Space) to open GNOME's window menu. Deja Window adds a **"Deja Window"** submenu there that is a full rule editor: the whole rule can be set up with switches, in place, without opening Preferences. The switches keep the menu open, so several of them can be flipped in one go.
 
-* **Managed by Window Class** / **Managed by Window Title**: creates (or re-enables) a rule matching this window's WM_CLASS or title, with every restore option turned on by default. The two are mutually exclusive for a given window — picking one turns off the other.
-* **Customize**: jumps straight to Preferences with that rule expanded, ready to fine-tune.
-* **Unmanaged**: turns off whichever rule currently governs this window, without deleting it. Shown as **"Unmanaged (Global Defaults)"** when Global Defaults is enabled, since the window will still be managed by it.
-* **Excluded**: turns off the window's rule and adds its WM_CLASS to the Global Defaults exclude list, so it stays untouched even if Global Defaults is enabled.
+The first line of the submenu tells you what governs the window right now — the matched pattern and whether it was matched by class or title, or *Managed by Global Defaults* when no rule of its own applies.
+
+* **Manage this Window**: creates (or re-enables) a rule for this window, with every restore option turned on by default. Turning it off gives the window back to Global Defaults.
+* **Match by Window Title**: matches on the window's title instead of its WM_CLASS (an exact match — regex patterns are set up in Preferences). Applies to the rule when the window is managed, and to the exclusion when it's excluded.
+* **Exclude from Global Defaults**: shown when the window has no rule of its own, adds it to the Global Defaults exclude list so it stays untouched.
+* **Restore**: expands into the rule's restore options — *Size, Position, Maximized, Workspace, Switch to Workspace, Minimized, Always on Top, On All Workspaces* — the same ones as the Applications tab in Preferences. Folded away by default to keep the menu short.
+* **Lock**: stops recording this window's changes, freezing the saved state. **Save Current State Now** then pins the window's current geometry as that frozen state.
+* **More Options…**: jumps to Preferences with the rule expanded, where its **Matching** row can turn it into a title or regex rule, plus everything else the menu doesn't cover.
+
+Rules created in Preferences with a regex pattern can match many windows at once, so the menu won't retire or re-target them from a single window — it shows them as a *regex rule* and leaves those two switches disabled. The restore switches still work on them.
 
 As with the Applications tab's per-rule switch, none of these actions delete a rule — they only turn it on or off, so switching back restores any customization you'd already made.
 

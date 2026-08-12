@@ -1,10 +1,13 @@
+import Gio from 'gi://Gio';
+import St from 'gi://St';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as WindowMenu from 'resource:///org/gnome/shell/ui/windowMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 // Default restore_* flags applied to a rule created from the window menu: the
-// user picked "Managed by ..." meaning "manage everything about this window",
-// so start fully enabled rather than an inert rule the user has to open
-// Settings just to activate.
+// user flipped "Manage this window" meaning "manage everything about this
+// window", so start fully enabled rather than an inert rule the user has to
+// open Settings just to activate.
 const NEW_RULE_DEFAULTS = {
     enabled: true,
     is_regex: false,
@@ -19,11 +22,49 @@ const NEW_RULE_DEFAULTS = {
     restore_sticky: true,
 };
 
+// The per-rule restore_* switches, in menu order. Labels are deliberately much
+// shorter than their prefs counterparts ("On All Workspaces" vs "Restore Always
+// on Visible Workspace"): the window menu is narrow and every label widens it.
+// 'dependsOn' greys a switch out while the flag it refines is off.
+const RESTORE_TOGGLES = [
+    { key: 'restore_size', label: 'Size' },
+    { key: 'restore_pos', label: 'Position' },
+    { key: 'restore_maximized', label: 'Maximized' },
+    { key: 'restore_workspace', label: 'Workspace' },
+    { key: 'switch_to_workspace', label: 'Switch to Workspace', dependsOn: 'restore_workspace' },
+    { key: 'restore_minimized', label: 'Minimized' },
+    { key: 'restore_above', label: 'Always on Top' },
+    { key: 'restore_sticky', label: 'On All Workspaces' },
+];
+
+// Identity patterns (especially titles) can be arbitrarily long; the header
+// label would otherwise stretch the whole window menu.
+const MAX_HEADER_PATTERN = 34;
+
+// Breathing room left between the capped menu and the edge of the work area.
+const HEIGHT_LIMIT_MARGIN = 24;
+
+// Never cap the menu below this, however little room the title bar leaves: a
+// tighter limit would clip GNOME's own items with no way to scroll to them.
+const MIN_HEIGHT_LIMIT = 200;
+
+function ellipsize(text) {
+    if (!text) return '';
+    return text.length > MAX_HEADER_PATTERN
+        ? `${text.slice(0, MAX_HEADER_PATTERN - 1)}…`
+        : text;
+}
+
 /**
  * Adds a "Deja Window" submenu to GNOME Shell's window menu (the menu shown
  * from the title bar's right-click / Super+Space), mirroring how extensions
  * like Tiling Shell inject items: wrap WindowMenu.prototype._buildMenu so the
  * original menu is built first, then append our own items.
+ *
+ * The submenu is a full rule editor, not just a mode picker: the whole rule
+ * (match mode, every restore_* flag, the lock) is editable in place so the
+ * common case never needs Preferences. Only regex rules and the rest of the
+ * prefs surface still require opening Settings.
  */
 export class DejaWindowMenu {
     constructor(extension) {
@@ -127,64 +168,368 @@ export class DejaWindowMenu {
         return { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedClassIdx, excludedTitleIdx, state };
     }
 
+    // One line describing what governs this window right now, so the switches
+    // below have a subject: which pattern is matched, and by what.
+    _headerText(status) {
+        const { state, activeConfig, pattern, globalDefaults } = status;
+
+        if (state === 'class' || state === 'name') {
+            if (activeConfig.is_regex) return `${ellipsize(activeConfig.wm_class)} — regex rule`;
+            return `${ellipsize(pattern)} — matched by ${state === 'name' ? 'title' : 'class'}`;
+        }
+        if (state === 'excluded-class' || state === 'excluded-title') {
+            return `${ellipsize(pattern)} — excluded`;
+        }
+        // Nothing explicit: Global Defaults may still be managing this window,
+        // so don't claim it's untouched when it isn't.
+        return globalDefaults.enabled ? 'Managed by Global Defaults' : 'Not managed';
+    }
+
+    // Flattens _readState into what the switches actually need.
+    _status(wmClass, title) {
+        const st = this._readState(wmClass, title);
+        const managed = st.state === 'class' || st.state === 'name';
+        const excluded = st.state === 'excluded-class' || st.state === 'excluded-title';
+        const modeIsTitle = st.state === 'name' || st.state === 'excluded-title';
+
+        return {
+            ...st,
+            managed,
+            excluded,
+            modeIsTitle,
+            // A regex rule can match many windows; the menu must not silently
+            // rewrite or retire it on this window's behalf.
+            isRegex: managed && !!st.activeConfig.is_regex,
+            config: st.activeConfig || {},
+            pattern: modeIsTitle ? title : wmClass,
+        };
+    }
+
     _appendSubmenu(menu, window) {
         const wmClass = window.get_wm_class();
         const title = window.get_title();
         if (!wmClass && !title) return;
-
-        const { state, globalDefaults } = this._readState(wmClass, title);
-        const managed = state === 'class' || state === 'name';
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         const submenu = new PopupMenu.PopupSubMenuMenuItem('Deja Window');
         menu.addMenuItem(submenu);
 
-        const addItem = (label, key, enabled) => {
-            const item = new PopupMenu.PopupMenuItem(label);
-            item.setOrnament(state === key ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
-            if (!enabled) item.setSensitive(false);
-            item.connect('activate', () => this._applyState(window, wmClass, title, key));
-            submenu.menu.addMenuItem(item);
+        // 'restoreOpen' is the only piece of menu state that isn't backed by
+        // settings: the restore_* switches are worth a whole screenful, so they
+        // start folded away behind their own expander row.
+        const items = { restoreOpen: false };
+
+        // Set while sync() drives the switches. PopupSwitchMenuItem emits
+        // 'toggled' off the underlying Switch's notify::state, so setting a
+        // state programmatically fires the handlers exactly like a click would
+        // — without this guard, painting the menu would write settings back.
+        let syncing = false;
+
+        // Single source of truth for how the submenu looks, including the
+        // initial paint: every handler just writes to GSettings and calls this,
+        // instead of patching items by hand.
+        const sync = () => {
+            syncing = true;
+            try {
+                this._syncItems(items, wmClass, title);
+            } finally {
+                syncing = false;
+            }
+            // Showing or hiding items changes how tall the submenu is, which is
+            // what its scrollbar decision hangs on.
+            this._syncScroll(menu, submenu);
         };
 
-        addItem('Managed by Window Class', 'class', !!wmClass);
-        addItem('Managed by Window Title', 'name', !!title);
+        const addSwitch = (label, onToggled) => {
+            const item = new PopupMenu.PopupSwitchMenuItem(label, false);
+            // Flipping a switch must not dismiss the window menu — the point of
+            // this submenu is setting several flags in one go.
+            // PopupSwitchMenuItem.activate() toggles and then chains up to
+            // PopupBaseMenuItem.activate(), which is what closes the menu;
+            // shadow it on the instance with a toggle-only version.
+            item.activate = () => item.toggle();
+            item.connect('toggled', (_item, active) => {
+                if (syncing) return;
+                onToggled(active);
+                // The write may have been rejected or coerced (e.g. a missing
+                // pattern), so take the switch position back from settings.
+                sync();
+            });
+            submenu.menu.addMenuItem(item);
+            return item;
+        };
 
-        // Only meaningful once one of the two "Managed by" rules is active.
-        const customizeItem = new PopupMenu.PopupMenuItem('Customize');
-        // Reserve the same ornament gutter as the radio items above/below, so
-        // its label lines up with theirs instead of sitting flush left.
-        customizeItem.setOrnament(PopupMenu.Ornament.NONE);
-        if (!managed) customizeItem.setSensitive(false);
-        customizeItem.connect('activate', () => this._openCustomize(wmClass, title));
-        submenu.menu.addMenuItem(customizeItem);
+        items.header = new PopupMenu.PopupMenuItem('', {
+            reactive: false,
+            can_focus: false,
+        });
+        submenu.menu.addMenuItem(items.header);
+
+        items.manage = addSwitch('Manage this Window', active => {
+            if (!active) {
+                this._applyState(window, wmClass, title, 'unmanaged');
+                return;
+            }
+
+            // Prefer re-enabling a rule this window already had (switched off
+            // earlier, or configured in Preferences) over creating a fresh one,
+            // so its customization survives an off/on round trip. Otherwise
+            // rules are keyed by class, falling back to the title only when the
+            // window has no class to match on.
+            const { slotClass, slotTitle } = this._status(wmClass, title);
+            let target;
+            if (slotClass) target = 'class';
+            else if (slotTitle) target = 'name';
+            else target = wmClass ? 'class' : 'name';
+
+            this._applyState(window, wmClass, title, target);
+        });
+
+        items.mode = addSwitch('Match by Window Title', active => {
+            const st = this._status(wmClass, title);
+            if (st.managed) {
+                this._applyState(window, wmClass, title, active ? 'name' : 'class');
+            } else if (st.excluded) {
+                this._applyState(window, wmClass, title, active ? 'excluded-title' : 'excluded-class');
+            }
+        });
+
+        items.exclude = addSwitch('Exclude from Global Defaults', active => {
+            if (active) {
+                const { modeIsTitle } = this._status(wmClass, title);
+                const byTitle = wmClass ? modeIsTitle : true;
+                this._applyState(window, wmClass, title, byTitle ? 'excluded-title' : 'excluded-class');
+            } else {
+                this._applyState(window, wmClass, title, 'unmanaged');
+            }
+        });
+
+        items.restoreSeparator = new PopupMenu.PopupSeparatorMenuItem();
+        submenu.menu.addMenuItem(items.restoreSeparator);
+
+        // Expander for the restore_* block. Deliberately not a nested
+        // PopupSubMenuMenuItem: opening one of those reports to _getTopMenu(),
+        // which is the *window* menu, so it would close this submenu — the very
+        // thing it lives in. Showing/hiding plain items is both simpler and
+        // free of that ownership problem.
+        items.restore = new PopupMenu.PopupMenuItem('Restore');
+        items.restore.add_child(new St.Bin({
+            style_class: 'popup-menu-item-expander',
+            x_expand: true,
+        }));
+        items.restoreArrow = PopupMenu.arrowIcon(St.Side.RIGHT);
+        items.restore.add_child(items.restoreArrow);
+        // Same reason as the switches: expanding must not dismiss the menu.
+        items.restore.activate = () => {
+            items.restoreOpen = !items.restoreOpen;
+            sync();
+        };
+        submenu.menu.addMenuItem(items.restore);
+
+        for (const toggle of RESTORE_TOGGLES) {
+            items[toggle.key] = addSwitch(toggle.label, active => {
+                this._updateActiveConfig(wmClass, title, config => {
+                    config[toggle.key] = active;
+                });
+            });
+        }
+
+        items.lock = addSwitch('Lock (don’t record changes)', active => {
+            this._updateActiveConfig(wmClass, title, config => {
+                config.locked = active;
+            });
+        });
+
+        items.capture = new PopupMenu.PopupMenuItem('Save Current State Now');
+        items.capture.connect('activate', () => this._captureState(window, wmClass, title));
+        submenu.menu.addMenuItem(items.capture);
 
         submenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // With Global Defaults enabled, an "Unmanaged" window isn't actually
-        // untouched: it still gets managed via Global Defaults, so say so.
-        const unmanagedLabel = globalDefaults.enabled ? ' Managed by Global Defaults' : 'Unmanaged';
-        addItem(unmanagedLabel, 'unmanaged', true);
-        addItem('Excluded by Window Class', 'excluded-class', !!wmClass);
-        addItem('Excluded by Window Title', 'excluded-title', !!title);
+        const moreItem = new PopupMenu.PopupMenuItem('More Options…');
+        moreItem.connect('activate', () => this._openCustomize(wmClass, title));
+        submenu.menu.addMenuItem(moreItem);
+
+        // Cap the window menu's height only while our submenu is expanded, so a
+        // collapsed "Deja Window" leaves GNOME's menu behaving exactly as it
+        // does without the extension. This runs before PopupSubMenu.open()
+        // decides whether it needs a scrollbar, which is what makes the
+        // decision come out right for the initial state.
+        submenu.menu.connect('open-state-changed', (_submenu, open) => {
+            if (open) this._limitHeight(menu, submenu);
+            else this._releaseHeight(menu);
+        });
+
+        sync();
     }
 
-    // Opens Preferences with the window's current rule pre-expanded. Since
-    // prefs.js runs in a separate process, the target rule is handed over via
-    // a one-shot GSettings key rather than any direct call.
+    // Bounds the window menu to the room actually available around the title
+    // bar. Without this, expanding the submenu can make the menu taller than
+    // the screen, and BoxPointer re-picks the side it points at on the next
+    // relayout: a menu that had just flipped above a low title bar flips back
+    // below it and runs off the bottom edge. Capping the height keeps it
+    // fitting on the side it chose. St.ScrollView only ever scrolls when a
+    // max-height is set on the *top* menu (see PopupSubMenu's own comment), so
+    // the style has to go on the window menu itself, not on our submenu.
+    _limitHeight(menu, submenu) {
+        const source = menu.sourceActor;
+        if (!source) return;
+
+        const monitorIndex = Main.layoutManager.findIndexForActor(source);
+        const workArea = Main.layoutManager.getWorkAreaForMonitor(monitorIndex);
+        if (!workArea) return;
+
+        const [, sourceY] = source.get_transformed_position();
+        const [, sourceHeight] = source.get_transformed_size();
+        const spaceAbove = sourceY - workArea.y;
+        const spaceBelow = workArea.y + workArea.height - (sourceY + sourceHeight);
+
+        const limit = Math.max(MIN_HEIGHT_LIMIT,
+            Math.floor(Math.max(spaceAbove, spaceBelow)) - HEIGHT_LIMIT_MARGIN);
+
+        menu.actor.style = `max-height: ${limit}px;`;
+        this._syncScroll(menu, submenu);
+    }
+
+    // Drops the cap again, leaving GNOME's menu exactly as it found it.
+    _releaseHeight(menu) {
+        menu.actor.style = null;
+    }
+
+    // Re-runs PopupSubMenu's own scrollbar test. It only does that when it
+    // opens ("Dynamic changes in whether we need it aren't handled properly"),
+    // but our submenu also grows and shrinks while it's open.
+    _syncScroll(menu, submenu) {
+        // Nothing to decide while the submenu is folded away — and this also
+        // keeps the initial paint from measuring a menu that isn't shown yet.
+        if (!submenu.menu.isOpen) return;
+
+        const scrollView = submenu.menu.actor;
+        const [, naturalHeight] = menu.actor.get_preferred_height(-1);
+        const maxHeight = menu.actor.get_theme_node().get_max_height();
+        const needsScrollbar = maxHeight >= 0 && naturalHeight >= maxHeight;
+
+        scrollView.vscrollbar_policy =
+            needsScrollbar ? St.PolicyType.AUTOMATIC : St.PolicyType.NEVER;
+        if (needsScrollbar) {
+            scrollView.add_style_pseudo_class('scrolled');
+        } else {
+            scrollView.remove_style_pseudo_class('scrolled');
+        }
+    }
+
+    // Repaints every item from the current settings state. Called for the
+    // initial build and after each edit, so there's exactly one description of
+    // what the submenu should look like for a given state.
+    _syncItems(items, wmClass, title) {
+        const st = this._status(wmClass, title);
+        const { managed, excluded, modeIsTitle, isRegex, config } = st;
+
+        items.header.label.text = this._headerText(st);
+
+        items.manage.setToggleState(managed);
+        items.manage.setSensitive(!isRegex);
+
+        items.mode.setToggleState(modeIsTitle);
+        // Only meaningful when there's something to re-target, and only
+        // possible when both identities exist to switch between.
+        items.mode.setSensitive(!isRegex && !!wmClass && !!title && (managed || excluded));
+
+        // Excluding is about the Global Defaults fallback, which an explicit
+        // rule already overrides — so it's irrelevant while managed.
+        items.exclude.visible = !managed;
+        items.exclude.setToggleState(excluded);
+
+        // The restore_* flags of an explicit rule, behind their expander.
+        // Deliberately hidden rather than disabled when unmanaged: the values
+        // would be the Global Defaults', and editing those from a single
+        // window's menu would silently change every other app's behaviour.
+        // Unmanaging also folds the block back up, so re-enabling a rule always
+        // starts from the short menu.
+        if (!managed) items.restoreOpen = false;
+
+        items.restoreSeparator.visible = managed;
+        items.restore.visible = managed;
+        items.restoreArrow.icon_name = items.restoreOpen ? 'pan-down-symbolic' : 'pan-end-symbolic';
+
+        for (const toggle of RESTORE_TOGGLES) {
+            const item = items[toggle.key];
+            item.visible = managed && items.restoreOpen;
+            item.setToggleState(!!config[toggle.key]);
+            item.setSensitive(!toggle.dependsOn || !!config[toggle.dependsOn]);
+        }
+
+        items.lock.visible = managed;
+        items.lock.setToggleState(config.locked === true);
+        items.capture.visible = managed;
+        // Same rationale as the prefs button: without the lock, the very next
+        // window move overwrites whatever we just pinned.
+        items.capture.setSensitive(config.locked === true);
+    }
+
+    // Opens Preferences, with the window's current rule pre-expanded when it
+    // has one. Since prefs.js runs in a separate process, the target rule is
+    // handed over via a one-shot GSettings key rather than any direct call.
     _openCustomize(wmClass, title) {
         const settings = this._extension._settings;
         if (!settings) return;
 
         const { activeConfig } = this._readState(wmClass, title);
+        settings.set_string('prefs-highlight-target', activeConfig
+            ? JSON.stringify({
+                wm_class: activeConfig.wm_class,
+                match_mode: activeConfig.match_mode || 'wm_class',
+            })
+            : '');
+        this._extension.openPreferences();
+    }
+
+    // Snapshots this window's geometry into the rule's saved state. Unlike the
+    // prefs button, no GSettings round-trip is needed: the menu runs inside the
+    // extension process and already holds the Meta.Window.
+    _captureState(window, wmClass, title) {
+        const { activeConfig } = this._readState(wmClass, title);
         if (!activeConfig) return;
 
-        settings.set_string('prefs-highlight-target', JSON.stringify({
-            wm_class: activeConfig.wm_class,
-            match_mode: activeConfig.match_mode || 'wm_class',
-        }));
-        this._extension.openPreferences();
+        const saved = this._extension.captureWindowState(window, activeConfig.wm_class);
+        this._showOsd(saved ? 'document-save-symbolic' : 'dialog-error-symbolic',
+            saved ? 'Window state saved' : 'Could not save window state');
+    }
+
+    // Transient on-screen confirmation (the menu closes on activation, so
+    // there's nothing left to show the result in). OsdWindowManager.show()
+    // changed signature in GNOME 50 — a per-monitor 'levels' map instead of a
+    // leading monitor index — so pick the entry point by feature detection,
+    // the same approach extension.js uses for the Meta maximize/unmaximize
+    // arity differences. Level arguments are omitted on purpose: that hides
+    // the progress bar, leaving just the icon and the label.
+    _showOsd(iconName, label) {
+        const icon = new Gio.ThemedIcon({ name: iconName });
+        const manager = Main.osdWindowManager;
+
+        if (typeof manager.showAll === 'function') {
+            manager.showAll(icon, label);
+        } else {
+            manager.show(-1, icon, label);
+        }
+    }
+
+    // Applies a mutation to the rule currently governing this window and
+    // persists it. No-op when nothing explicit governs it (the restore/lock
+    // switches are hidden in that case).
+    _updateActiveConfig(wmClass, title, mutate) {
+        const settings = this._extension._settings;
+        if (!settings) return;
+
+        const { configs, activeConfig } = this._readState(wmClass, title);
+        if (!activeConfig) return;
+
+        // activeConfig is a reference into configs, so mutating it in place is
+        // enough for the re-serialization below to pick the change up.
+        mutate(activeConfig);
+        settings.set_string('window-app-configs', JSON.stringify(configs));
+        this._extension._updateConfigs();
     }
 
     // Removes the (menu-managed) exclusion rules at the given indexes from
@@ -208,7 +553,7 @@ export class DejaWindowMenu {
         const { configs, globalDefaults, activeConfig, slotClass, slotTitle, excludedList, excludedClassIdx, excludedTitleIdx, state } =
             this._readState(wmClass, title);
 
-        // Radio-style items: clicking the already-active one is a no-op.
+        // Nothing to do when the window is already in the requested state.
         if (state === targetState) return;
 
         let configsChanged = false;

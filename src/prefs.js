@@ -96,7 +96,9 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // Saved window states are intentionally excluded: they're machine- and
         // session-specific geometry, not user configuration.
         const backupGroup = new Adw.PreferencesGroup({
-            title: 'Backup & Restore',
+            // Escaped: Adw.PreferencesGroup titles are parsed as Pango markup,
+            // and a bare ampersand makes the whole title fail to render.
+            title: 'Backup &amp; Restore',
             description: 'Export your application rules and Global Defaults to a file, or import them back.'
         });
         settingsPage.add(backupGroup);
@@ -458,6 +460,67 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             }
         };
 
+        // Rewrites what an existing rule matches (pattern, mode, regex). This is
+        // the rule's identity — window-app-states is keyed by the pattern and
+        // every helper here looks configs up by (pattern, mode) — so it can't go
+        // through updateConfig: the saved geometry has to follow the rule to its
+        // new key, and the new identity must stay unique. Returns null on
+        // success, or a reason string for the caller to report.
+        const updateConfigMatching = (oldPattern, oldMode, newPattern, newMode, newIsRegex) => {
+            if (!newPattern) return 'The pattern cannot be empty';
+
+            if (newIsRegex) {
+                try {
+                    new RegExp(newPattern);
+                } catch (e) {
+                    return `Invalid regular expression: ${e.message}`;
+                }
+            }
+
+            const configs = getConfigs();
+            const config = configs.find(c =>
+                c.wm_class === oldPattern && (c.match_mode || 'wm_class') === oldMode);
+            if (!config) return 'This rule no longer exists';
+
+            const identityChanged = newPattern !== oldPattern || newMode !== oldMode;
+            if (identityChanged && configs.some(c => c !== config &&
+                c.wm_class === newPattern && (c.match_mode || 'wm_class') === newMode)) {
+                return 'Another rule already matches that';
+            }
+
+            config.wm_class = newPattern;
+            config.match_mode = newMode;
+            config.is_regex = newIsRegex;
+            saveConfigs(configs);
+
+            if (newPattern !== oldPattern) {
+                migrateSavedState(oldPattern, newPattern, configs);
+            }
+            return null;
+        };
+
+        // Moves a rule's saved geometry to its new key, so renaming a pattern
+        // doesn't silently reset the window's remembered size/position. Never
+        // overwrites state that's already there, and leaves the old entry alone
+        // if some other rule still matches on that pattern (states are keyed by
+        // pattern only, so two rules differing just by match_mode share one).
+        const migrateSavedState = (oldKey, newKey, configs) => {
+            let states = {};
+            try {
+                states = JSON.parse(settings.get_string('window-app-states')) || {};
+            } catch (e) {
+                return;
+            }
+
+            if (!states[oldKey] || states[newKey]) return;
+
+            states[newKey] = states[oldKey];
+            if (!configs.some(c => c.wm_class === oldKey)) {
+                delete states[oldKey];
+            }
+            settings.set_string('window-app-states', JSON.stringify(states));
+        };
+
         const removeConfig = (wmClass, matchMode) => {
             let configs = getConfigs();
             // Filter out the specific entry
@@ -574,6 +637,112 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         settings.set_string('capture-state-request', '');
         captureSignalId = settings.connect('changed::capture-state-request', onCaptureReply);
 
+        // One-line description of what a rule matches, shown on its "Matching" row.
+        const matchSummary = (config) => {
+            const parts = [config.wm_class,
+                (config.match_mode === 'title') ? 'Window Title' : 'Window Class'];
+            if (config.is_regex) parts.push('Regex');
+            return parts.join('  ·  ');
+        };
+
+        // Identity of the rule to re-expand after the next refresh, so editing a
+        // rule's matching (which renames its row) doesn't collapse it.
+        let expandTarget = null;
+
+        // Editor for a rule's matching, offered per-rule so a rule created from
+        // the window menu — which always picks an exact class/title match — can
+        // be turned into a title or regex rule afterwards, instead of having to
+        // delete it and lose its options. Dialog rather than inline rows: the
+        // three fields only make sense applied together, and it keeps a rule's
+        // expander from growing another block of controls.
+        const showMatchDialog = (config) => {
+            const oldPattern = config.wm_class;
+            const oldMode = config.match_mode || 'wm_class';
+
+            const dialog = new Adw.Dialog({ title: 'Edit Matching', content_width: 460 });
+
+            const headerBar = new Adw.HeaderBar({ show_end_title_buttons: false });
+            const cancelButton = new Gtk.Button({ label: 'Cancel' });
+            const saveButton = new Gtk.Button({ label: 'Save', css_classes: ['suggested-action'] });
+            headerBar.pack_start(cancelButton);
+            headerBar.pack_end(saveButton);
+
+            const editGroup = new Adw.PreferencesGroup({
+                margin_start: 12, margin_end: 12, margin_top: 12, margin_bottom: 12,
+                description: ''
+            });
+
+            const modeRow = new Adw.ActionRow({ title: 'Match By' });
+            const dialogModeCombo = new Gtk.ComboBoxText({ valign: Gtk.Align.CENTER });
+            dialogModeCombo.append('wm_class', 'WM_CLASS');
+            dialogModeCombo.append('title', 'Window Title');
+            dialogModeCombo.set_active_id(oldMode);
+            modeRow.add_suffix(dialogModeCombo);
+            editGroup.add(modeRow);
+
+            const regexRow = new Adw.ActionRow({
+                title: 'Regular Expression',
+                subtitle: 'Treat the pattern as a regex, e.g. "^DevTools.*"'
+            });
+            const regexSwitch = new Gtk.Switch({
+                active: !!config.is_regex,
+                valign: Gtk.Align.CENTER
+            });
+            regexRow.add_suffix(regexSwitch);
+            editGroup.add(regexRow);
+
+            const patternRow = new Adw.ActionRow({ title: 'Pattern' });
+            const patternEntry = new Gtk.Entry({
+                text: oldPattern,
+                hexpand: true,
+                valign: Gtk.Align.CENTER
+            });
+            patternRow.add_suffix(patternEntry);
+
+            if (known.length > 0 || knownTitles.length > 0) {
+                const pickButton = new Gtk.Button({
+                    icon_name: 'view-list-symbolic',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Pick a known app'
+                });
+                pickButton.connect('clicked', () => {
+                    const items = dialogModeCombo.get_active_id() === 'title' ? knownTitles : known;
+                    showKnownAppsPicker(patternEntry, items);
+                });
+                patternRow.add_suffix(pickButton);
+            }
+            editGroup.add(patternRow);
+
+            const apply = () => {
+                const newPattern = patternEntry.get_text().trim();
+                const newMode = dialogModeCombo.get_active_id() || 'wm_class';
+
+                // Set before the write: saving triggers the list rebuild through
+                // the settings handler, which may run before this returns, and
+                // that rebuild is what consumes the target.
+                expandTarget = { wm_class: newPattern, match_mode: newMode };
+
+                const error = updateConfigMatching(oldPattern, oldMode, newPattern, newMode, regexSwitch.active);
+                if (error) {
+                    // Keep the dialog open so the entry can be corrected.
+                    expandTarget = null;
+                    showToast(error);
+                    return;
+                }
+                dialog.close();
+            };
+
+            saveButton.connect('clicked', apply);
+            patternEntry.connect('activate', apply);
+            cancelButton.connect('clicked', () => dialog.close());
+
+            const toolbarView = new Adw.ToolbarView();
+            toolbarView.add_top_bar(headerBar);
+            toolbarView.set_content(editGroup);
+            dialog.set_child(toolbarView);
+            dialog.present(window);
+        };
+
         // -- List Section --
         const listGroup = new Adw.PreferencesGroup({
             title: 'Managed Windows'
@@ -603,7 +772,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     title += ' [Regex]';
                 }
 
-                const isExpanded = expandedStates[title] || false;
+                const isExpanded = expandedStates[title] ||
+                    (expandTarget !== null &&
+                     expandTarget.wm_class === config.wm_class &&
+                     expandTarget.match_mode === (config.match_mode || 'wm_class'));
 
                 // Row stays expandable regardless of enabled state, so a
                 // disabled rule's details can still be reviewed/edited; only
@@ -630,6 +802,22 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                     valign: Gtk.Align.CENTER
                 });
                 row.add_suffix(enabledSwitch);
+
+                // What this rule matches, editable after the fact. Kept out of
+                // detailRows on purpose: like the delete button, it stays usable
+                // while the rule is switched off.
+                const matchRow = new Adw.ActionRow({
+                    title: 'Matching',
+                    subtitle: matchSummary(config)
+                });
+                const editMatchButton = new Gtk.Button({
+                    icon_name: 'document-edit-symbolic',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Change what this rule matches'
+                });
+                editMatchButton.connect('clicked', () => showMatchDialog(config));
+                matchRow.add_suffix(editMatchButton);
+                row.add_row(matchRow);
 
                 const detailRows = [];
                 const addAppRow = (title, subtitle, key, initialValue, extraSuffix = null) => {
@@ -696,6 +884,8 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 listGroup.add(row);
                 rows.push(row);
             });
+
+            expandTarget = null;
         };
 
         // Initial load

@@ -398,19 +398,27 @@ export default class DejaWindowExtension extends Extension {
         // recently interacted with — the one they mean by "the current window".
         const window = global.display.get_tab_list(Meta.TabList.NORMAL, null)
             .find(w => this._isValidManagedWindow(w) && this._windowMatchesConfig(config, w));
-        if (!window || !window.get_workspace()) {
-            reply('no-window');
-            return;
-        }
+
+        reply(this.captureWindowState(window, config.wm_class) ? 'saved' : 'no-window');
+    }
+
+    // Snapshots a specific window's current geometry/state into
+    // window-app-states under the given identity, writing every field (see
+    // CAPTURE_ALL_FLAGS) regardless of the rule's restore_* flags. Public
+    // because windowMenu.js calls it directly — running in this same process,
+    // it already holds the Meta.Window and needs no capture-state-request
+    // round-trip. Returns false if the window can't be snapshotted.
+    captureWindowState(window, identity) {
+        if (!window || !identity || !window.get_workspace()) return false;
 
         const rect = window.get_frame_rect();
         const isMaximized = window.maximized_horizontally || window.maximized_vertically;
         const workspaceIndex = window.get_workspace().index();
 
-        this._performSave(config.wm_class, window.get_monitor(), rect.x, rect.y, rect.width, rect.height,
+        this._performSave(identity, window.get_monitor(), rect.x, rect.y, rect.width, rect.height,
             CAPTURE_ALL_FLAGS, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
 
-        reply('saved');
+        return true;
     }
 
     // Helper to record a new WM_CLASS in the known-wm-classes setting
