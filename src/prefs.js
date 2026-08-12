@@ -405,6 +405,32 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             });
             dialog.add_controller(escController);
 
+            // Click-outside-to-dismiss, which Adw.Dialog doesn't do on its own.
+            // The dialog widget spans the whole parent window (the dimmed area
+            // is part of it, wrapped in a GtkWindowHandle), so a capture-phase
+            // click gesture on it sees every press and only has to tell the two
+            // regions apart: presses inside the sheet are left alone, presses
+            // outside close the picker. Offered here and not in "Edit Matching"
+            // on purpose — this dialog only picks a value, so a stray click
+            // outside it can't throw away anything the user typed.
+            const dismissGesture = new Gtk.GestureClick();
+            dismissGesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
+            dismissGesture.connect('pressed', (gesture, _nPress, x, y) => {
+                const [ok, bounds] = toolbarView.compute_bounds(dialog);
+                if (!ok) return;
+
+                const inside = x >= bounds.origin.x && y >= bounds.origin.y &&
+                    x <= bounds.origin.x + bounds.size.width &&
+                    y <= bounds.origin.y + bounds.size.height;
+                if (inside) return;
+
+                // Claim it so the press doesn't also start dragging the window
+                // by the handle behind the dimming.
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED);
+                dialog.close();
+            });
+            dialog.add_controller(dismissGesture);
+
             dialog.present(window);
 
             // Focus the search entry once the dialog is actually mapped, so typing
