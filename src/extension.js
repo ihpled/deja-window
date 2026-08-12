@@ -190,7 +190,7 @@ export default class DejaWindowExtension extends Extension {
         // Logical on/off switch: bypasses window tracking/restore/save without
         // actually disabling the extension, so the indicator and this menu
         // stay available to switch it back on.
-        const enabledItem = new PopupMenu.PopupSwitchMenuItem('Enabled', this._functionalityEnabled);
+        const enabledItem = new PopupMenu.PopupSwitchMenuItem('Active', this._functionalityEnabled);
         enabledItem.connect('toggled', (_item, state) => {
             this._settings.set_boolean('functionality-enabled', state);
         });

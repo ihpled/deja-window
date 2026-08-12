@@ -147,7 +147,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         settingsPage.add(statusGroup);
 
         const statusRow = new Adw.ActionRow({
-            title: 'Enabled',
+            title: 'Active',
             subtitle: 'When off, Deja Window stays installed but all window tracking, restoring and saving is bypassed.'
         });
         const statusSwitch = new Gtk.Switch({ valign: Gtk.Align.CENTER });
