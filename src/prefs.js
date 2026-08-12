@@ -395,6 +395,8 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // State used by functions
         let rows = [];
         let settingsSignalId = null;
+        let captureSignalId = null;
+        let captureTimeoutId = 0;
 
         // --- Helper Functions ---
 
@@ -415,8 +417,10 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // Builds an ActionRow with a single switch and wires it to onChange.
         // addFn receives the finished row so callers can decide how/where to
         // attach it (Adw.ExpanderRow.add_row vs Adw.PreferencesGroup.add) and
-        // whether to track it for later removal on refresh.
-        const makeSwitchRow = (addFn, title, subtitle, initialValue, onChange) => {
+        // whether to track it for later removal on refresh. extraSuffix, when
+        // given, is packed to the left of the switch (suffixes are laid out in
+        // insertion order), keeping the switch itself rightmost as usual.
+        const makeSwitchRow = (addFn, title, subtitle, initialValue, onChange, extraSuffix = null) => {
             const row = new Adw.ActionRow({ title });
             if (subtitle) row.set_subtitle(subtitle);
             const sw = new Gtk.Switch({
@@ -424,6 +428,7 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 valign: Gtk.Align.CENTER
             });
             sw.connect('notify::active', () => onChange(sw.active));
+            if (extraSuffix) row.add_suffix(extraSuffix);
             row.add_suffix(sw);
             addFn(row);
             return sw;
@@ -498,6 +503,77 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         // Connect Add Button
         addButton.connect('clicked', onAddClicked);
 
+        // -- "Save current window state" plumbing --
+        // This process has no access to Meta windows, so the per-rule capture
+        // button asks the extension over a GSettings key: we write the request,
+        // the extension answers on the same key by adding a 'status' field, and
+        // we consume that reply (showing a toast) and clear the key.
+
+        const showToast = (text) => {
+            if (typeof window.add_toast === 'function') {
+                window.add_toast(new Adw.Toast({ title: text, timeout: 3 }));
+            } else {
+                console.log(`[DejaWindow] ${text}`);
+            }
+        };
+
+        const cancelCaptureTimeout = () => {
+            if (captureTimeoutId) {
+                GLib.source_remove(captureTimeoutId);
+                captureTimeoutId = 0;
+            }
+        };
+
+        const requestCapture = (wmClass, matchMode) => {
+            cancelCaptureTimeout();
+            settings.set_string('capture-state-request', JSON.stringify({
+                wm_class: wmClass,
+                match_mode: matchMode || 'wm_class'
+            }));
+
+            // No reply ever arrives if the extension isn't actually running
+            // (disabled, or shell reloaded since): give up after a moment so the
+            // button doesn't just look broken, and drop the stale request.
+            captureTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                captureTimeoutId = 0;
+                settings.set_string('capture-state-request', '');
+                showToast('Deja Window is not running, so the current window state could not be read.');
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+
+        const onCaptureReply = () => {
+            const raw = settings.get_string('capture-state-request');
+            if (!raw) return;
+
+            let reply = null;
+            try {
+                reply = JSON.parse(raw);
+            } catch (e) {
+                reply = null;
+            }
+            // No 'status' field: this is our own request, still unanswered.
+            if (!reply || !reply.status) return;
+
+            cancelCaptureTimeout();
+            settings.set_string('capture-state-request', '');
+
+            if (reply.status !== 'saved') {
+                showToast(reply.status === 'no-window'
+                    ? `No open window matches “${reply.wm_class}”.`
+                    : `No rule found for “${reply.wm_class}”.`);
+                return;
+            }
+
+            showToast(`Current window state saved for “${reply.wm_class}”.`);
+        };
+
+        // A request left over from a previous session would make the next
+        // identical one a no-op, since GSettings only emits 'changed' when the
+        // value actually differs — so start from a clean slate.
+        settings.set_string('capture-state-request', '');
+        captureSignalId = settings.connect('changed::capture-state-request', onCaptureReply);
+
         // -- List Section --
         const listGroup = new Adw.PreferencesGroup({
             title: 'Managed Windows'
@@ -556,14 +632,35 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 row.add_suffix(enabledSwitch);
 
                 const detailRows = [];
-                const addAppRow = (title, subtitle, key, initialValue) => {
+                const addAppRow = (title, subtitle, key, initialValue, extraSuffix = null) => {
                     let detailRow;
-                    makeSwitchRow(r => { detailRow = r; row.add_row(r); }, title, subtitle, initialValue,
-                        value => updateConfig(config.wm_class, config.match_mode, key, value));
+                    const sw = makeSwitchRow(r => { detailRow = r; row.add_row(r); }, title, subtitle, initialValue,
+                        value => updateConfig(config.wm_class, config.match_mode, key, value), extraSuffix);
                     detailRows.push(detailRow);
+                    return sw;
                 };
 
-                addAppRow('Locked - window updates/changes are not saved', null, 'locked', config.locked || false);
+                // Pins this rule to the live geometry of the app's current window,
+                // instead of having to move the window and wait for the automatic
+                // (debounced) save. The extension does the actual snapshot, see
+                // requestCapture above.
+                const captureButton = new Gtk.Button({
+                    icon_name: 'document-save-symbolic',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Save the current window position/size as the fixed state (requires Locked)'
+                });
+                captureButton.connect('clicked', () => requestCapture(config.wm_class, config.match_mode));
+
+                const lockedSwitch = addAppRow('Locked - window updates/changes are not saved', null,
+                    'locked', config.locked || false, captureButton);
+
+                // Only offered while the rule is locked: without the lock the very
+                // next move/resize of the window would overwrite the state just
+                // captured, so the button would be pointless.
+                captureButton.sensitive = lockedSwitch.active;
+                lockedSwitch.connect('notify::active', () => {
+                    captureButton.sensitive = lockedSwitch.active;
+                });
                 addAppRow('Restore Size', null, 'restore_size', config.restore_size);
                 addAppRow('Restore Position', null, 'restore_pos', config.restore_pos);
                 addAppRow('Restore Maximized', null, 'restore_maximized', config.restore_maximized || false);
@@ -652,7 +749,6 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
             restore_above: false,
             restore_sticky: false,
             avoid_overlap: true,
-            locked: false,
             excluded_apps: []
         };
 
@@ -864,7 +960,6 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 }, title, subtitle, initialValue, value => updateGlobalDefaults(key, value));
             };
 
-            addDefaultRow('Locked - window updates/changes are not saved', null, 'locked', defaults.locked);
             addDefaultRow('Restore Size', null, 'restore_size', defaults.restore_size);
             addDefaultRow('Restore Position', null, 'restore_pos', defaults.restore_pos);
             addDefaultRow('Restore Maximized', null, 'restore_maximized', defaults.restore_maximized);
@@ -917,6 +1012,11 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
                 settings.disconnect(prefsHighlightSignalId);
                 prefsHighlightSignalId = null;
             }
+            if (captureSignalId) {
+                settings.disconnect(captureSignalId);
+                captureSignalId = null;
+            }
+            cancelCaptureTimeout();
             rows = [];
             globalDefaultsRows = [];
             excludeRows = [];

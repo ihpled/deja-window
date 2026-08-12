@@ -14,6 +14,21 @@ function debug(...args) {
     if (DEBUG) console.log(...args);
 }
 
+// Flags used when snapshotting a window on explicit user request (the "save
+// current window state" button in prefs): unlike an automatic save, every field
+// is written regardless of the rule's restore_* flags, so the pinned state is
+// complete if those flags are turned on later. Restore still only applies the
+// fields whose flag is enabled.
+const CAPTURE_ALL_FLAGS = {
+    restore_size: true,
+    restore_pos: true,
+    restore_maximized: true,
+    restore_workspace: true,
+    restore_minimized: true,
+    restore_above: true,
+    restore_sticky: true
+};
+
 /**
  * DejaWindowExtension Class
  * The main class for the "Deja Window" extension.
@@ -70,6 +85,12 @@ export default class DejaWindowExtension extends Extension {
         this._settings.connectObject('changed::window-global-defaults', () => {
             this._updateGlobalDefaults();
             this._adoptUnmanagedWindows();
+        }, this);
+
+        // One-shot "save current window state" requests coming from prefs.js
+        // (separate process, no access to Meta windows). See _handleCaptureRequest.
+        this._settings.connectObject('changed::capture-state-request', () => {
+            this._handleCaptureRequest();
         }, this);
 
         // Top bar indicator, shown/hidden per the show-indicator preference
@@ -261,33 +282,32 @@ export default class DejaWindowExtension extends Extension {
         }
     }
 
+    // Tests a single config's pattern against a window, per its match_mode and
+    // is_regex. Ignores the config's 'enabled' flag: callers that care about it
+    // (like _getConfigForWindow) check it themselves, while the capture request
+    // path deliberately matches disabled rules too.
+    _windowMatchesConfig(config, window) {
+        const mode = config.match_mode || 'wm_class';
+        const valueToCheck = mode === 'title' ? window.get_title() : window.get_wm_class();
+        if (!valueToCheck) return false;
+
+        if (!config.is_regex) return config.wm_class === valueToCheck;
+
+        try {
+            return new RegExp(config.wm_class).test(valueToCheck);
+        } catch (e) {
+            console.error(`[DejaWindow] Invalid regex in rule: ${config.wm_class}`, e);
+            return false;
+        }
+    }
+
     // Helper to find a matching config for a given Window
     _getConfigForWindow(window) {
         if (!window) return null;
 
-        const wmClass = window.get_wm_class();
-        const title = window.get_title();
-
-        return this._configs.find(c => {
-            // A disabled rule is treated as if it didn't exist: same effect as
-            // deleting it, but its definition/customization is preserved.
-            if (c.enabled === false) return false;
-
-            const mode = c.match_mode || 'wm_class';
-            let valueToCheck = wmClass;
-
-            if (mode === 'title') {
-                valueToCheck = title;
-            }
-
-            if (!valueToCheck) return false;
-
-            if (c.is_regex) {
-                return new RegExp(c.wm_class).test(valueToCheck);
-            } else {
-                return c.wm_class === valueToCheck;
-            }
-        });
+        // A disabled rule is treated as if it didn't exist: same effect as
+        // deleting it, but its definition/customization is preserved.
+        return this._configs.find(c => c.enabled !== false && this._windowMatchesConfig(c, window));
     }
 
     // Resolves the config and identity that should govern a window: an explicit
@@ -332,6 +352,65 @@ export default class DejaWindowExtension extends Extension {
                 return false;
             }
         });
+    }
+
+    // Handles a "save current window state" request written to
+    // capture-state-request by prefs.js: snapshots the current geometry/state of
+    // a window matching the given rule into window-app-states, so the rule can be
+    // pinned to an exact layout without having to unlock it, nudge the window,
+    // wait for the debounced save and lock it again (prefs only offers the
+    // button on rules that are already locked).
+    //
+    // The reply travels back on the same key as a 'status' field, which prefs.js
+    // consumes and clears — the branch below ignores anything carrying a status
+    // so our own reply doesn't re-enter this handler.
+    _handleCaptureRequest() {
+        if (!this._settings) return;
+
+        const raw = this._settings.get_string('capture-state-request');
+        if (!raw) return;
+
+        let request = null;
+        try {
+            request = JSON.parse(raw);
+        } catch (e) {
+            request = null;
+        }
+        if (!request || request.status || !request.wm_class) return;
+
+        const matchMode = request.match_mode || 'wm_class';
+        const reply = (status) => {
+            this._settings.set_string('capture-state-request',
+                JSON.stringify({ status, wm_class: request.wm_class, match_mode: matchMode }));
+        };
+
+        // Matched on identity (pattern + mode), not by matching a window, since
+        // the rule may well be disabled right now — the user is still entitled
+        // to pin its geometry.
+        const config = this._configs.find(c =>
+            c.wm_class === request.wm_class && (c.match_mode || 'wm_class') === matchMode);
+        if (!config) {
+            reply('no-rule');
+            return;
+        }
+
+        // Tab list is MRU-ordered, so the first match is the window the user most
+        // recently interacted with — the one they mean by "the current window".
+        const window = global.display.get_tab_list(Meta.TabList.NORMAL, null)
+            .find(w => this._isValidManagedWindow(w) && this._windowMatchesConfig(config, w));
+        if (!window || !window.get_workspace()) {
+            reply('no-window');
+            return;
+        }
+
+        const rect = window.get_frame_rect();
+        const isMaximized = window.maximized_horizontally || window.maximized_vertically;
+        const workspaceIndex = window.get_workspace().index();
+
+        this._performSave(config.wm_class, window.get_monitor(), rect.x, rect.y, rect.width, rect.height,
+            CAPTURE_ALL_FLAGS, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
+
+        reply('saved');
     }
 
     // Helper to record a new WM_CLASS in the known-wm-classes setting

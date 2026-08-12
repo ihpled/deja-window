@@ -44,6 +44,18 @@
       <description>JSON identifying a window-app-configs rule to auto-expand next time Preferences opens.</description>
     </key>
 
+    <!-- One-shot request/reply channel for the per-rule "save current window state"
+         button in Preferences (prefs.js runs in its own process and can't read
+         window geometry itself). prefs.js writes the request, extension.js answers
+         on the same key by adding a "status" field, and prefs.js clears it. -->
+    <!-- Request: {"wm_class": "...", "match_mode": "wm_class"|"title"} -->
+    <!-- Reply:   {"status": "saved"|"no-window"|"no-rule", "wm_class": "...", "match_mode": "..."} -->
+    <key name="capture-state-request" type="s">
+      <default>''</default>
+      <summary>Pending "save current window state" request</summary>
+      <description>JSON identifying a window-app-configs rule whose matching window should have its current geometry/state snapshotted into window-app-states.</description>
+    </key>
+
     <!-- Whether to show a top bar indicator with quick access to preferences / enable-disable -->
     <key name="show-indicator" type="b">
       <default>true</default>
@@ -73,7 +85,6 @@
         "restore_above": false,
         "restore_sticky": false,
         "avoid_overlap": true,
-        "locked": false,
         "excluded_apps": []
       }'</default>
       <summary>Global default restore rules</summary>

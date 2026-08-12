@@ -62,7 +62,7 @@ Open the extension preferences to start managing your windows. Preferences are o
    * Check "Regex" if you want to match multiple windows with a pattern.  
    * Example: WM_CLASS mode with .\*ghostty.\* will match any window class containing "ghostty", Window Title mode with ^DevTools.\* will match Chrome DevTools window.  
 3. **Toggles**:  
-   * **Locked**: Freezes the currently saved layout, preventing window updates or changes from being saved.
+   * **Locked**: Freezes the currently saved layout, preventing window updates or changes from being saved. While it's on, the save button next to it snapshots the app's current window (position, size, monitor, workspace and states) as that fixed layout right away (you don't have to unlock, arrange the window, wait for the automatic save and lock again).
    * **Restore Size**: App will open with the dimensions it had when last closed.  
    * **Restore Position**: App will open at the exact X/Y coordinates it had when last closed (includes restoring to the correct monitor in multi-display setups).  
    * **Restore Maximized**: App will open maximized if it was closed in that state.  
@@ -78,7 +78,7 @@ Open the extension preferences to start managing your windows. Preferences are o
 
 Rules applied automatically to every *normal* window that doesn't already match a rule in the Applications tab. Explicit per-app rules always take priority.
 
-* Has the same toggles as a per-app rule.
+* Has the same toggles as a per-app rule, minus **Locked**: pinning one fixed layout for every app that has no rule of its own isn't meaningful.
 * Turning it on is gated behind a confirmation dialog, since it changes the risk model for every installed app at once rather than one app you've already tested.
 * **Excluded Apps**: WM_CLASS values that should never be touched by Global Defaults, even while it's enabled.
 
