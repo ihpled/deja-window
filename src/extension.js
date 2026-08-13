@@ -29,6 +29,17 @@ const CAPTURE_ALL_FLAGS = {
     restore_sticky: true
 };
 
+// Meta.Window.maximize()/unmaximize() took a maximize-direction flags argument
+// up to GNOME 48 and take none from GNOME 49 on, where that Meta enum is gone —
+// so it must never be named here, only its numeric value (horizontal | vertical).
+// Which form to use is decided per call from the method's arity, since a single
+// zip serves the whole 46–50 range declared in metadata.json.
+const MAXIMIZE_BOTH = 3;
+
+function maximizeArgs(method) {
+    return typeof method === 'function' && method.length > 0 ? [MAXIMIZE_BOTH] : [];
+}
+
 /**
  * DejaWindowExtension Class
  * The main class for the "Deja Window" extension.
@@ -106,8 +117,10 @@ export default class DejaWindowExtension extends Extension {
         }, this);
 
         // Handle already existing windows (Crucial for X11 and reload)
-        // We use an idle callback to ensure the loop starts after full initialization
-        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+        // We use an idle callback to ensure the loop starts after full initialization.
+        // The id is kept so disable() can drop the source if it never got to run.
+        this._adoptIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._adoptIdleId = 0;
             // Meta.TabList.NORMAL includes standard managed windows (filters out O-R windows usually)
             const windows = global.display.get_tab_list(Meta.TabList.NORMAL, null);
             for (const window of windows) {
@@ -125,6 +138,12 @@ export default class DejaWindowExtension extends Extension {
     }
 
     disable() {
+        // Drop the adopt-existing-windows idle source if it is still pending
+        if (this._adoptIdleId) {
+            GLib.source_remove(this._adoptIdleId);
+            this._adoptIdleId = 0;
+        }
+
         if (this._windowMenu) {
             this._windowMenu.disable();
             this._windowMenu = null;
@@ -213,22 +232,11 @@ export default class DejaWindowExtension extends Extension {
     // --- HELPER METHODS FOR API COMPATIBILITY ---
 
     _maximizeWindow(window) {
-        // Feature detection: Check function arity (number of expected arguments)
-        // Older Meta versions expect flags (length > 0), newer versions do not (length === 0).
-        if (typeof window.maximize === 'function' && window.maximize.length > 0) {
-            window.maximize(Meta.MaximizeFlags.BOTH);
-        } else {
-            window.maximize();
-        }
+        window.maximize(...maximizeArgs(window.maximize));
     }
 
     _unmaximizeWindow(window) {
-        // Feature detection: Check function arity (number of expected arguments)
-        if (typeof window.unmaximize === 'function' && window.unmaximize.length > 0) {
-            window.unmaximize(Meta.MaximizeFlags.BOTH);
-        } else {
-            window.unmaximize();
-        }
+        window.unmaximize(...maximizeArgs(window.unmaximize));
     }
 
     // Helper to update configs from settings
@@ -461,6 +469,11 @@ export default class DejaWindowExtension extends Extension {
             GLib.source_remove(handle.wsTimeoutId);
             handle.wsTimeoutId = 0;
         }
+        // Remove the restore idle source if it has not run yet
+        if (handle.restoreIdleId) {
+            GLib.source_remove(handle.restoreIdleId);
+            handle.restoreIdleId = 0;
+        }
 
         // Disconnect all signals on the window associated with 'this' extension
         // This replaces the manual loop and try-catch blocks
@@ -577,6 +590,7 @@ export default class DejaWindowExtension extends Extension {
         const handle = {
             timeoutId: 0,               // Store timeout ID
             wsTimeoutId: 0,             // Store workspace timeout ID
+            restoreIdleId: 0,           // Store the pending restore idle ID
             isRestoreApplied: false,    // Track if restore has been applied
             actors: []                  // Track actors to disconnectObject if window closes
         };
@@ -715,11 +729,18 @@ export default class DejaWindowExtension extends Extension {
     // Applies the saved size and/or position, or falls back to centering if position is invalid/not requested.
     _applySavedState(window, identity, config) {
         const handle = this._handles.get(window);
-        if (!handle || handle.isRestoreApplied) return;
+        // A restore already applied — or already scheduled, since several signals can
+        // trigger one before the idle runs — needs no second source.
+        if (!handle || handle.isRestoreApplied || handle.restoreIdleId) return;
 
         // Use idle_add LOW PRIORITY to ensure we run after any pending internal Mutter layout logic.
-        // This is not a delay (time-based), but a priority-based scheduling.
-        GLib.idle_add(GLib.PRIORITY_LOW, () => {
+        // This is not a delay (time-based), but a priority-based scheduling. The id lives on the
+        // handle so _cleanupWindow() drops the source if the window closes — or the extension is
+        // disabled — before it runs. Every path below returns SOURCE_REMOVE, so the id is stale
+        // from the moment the callback starts.
+        handle.restoreIdleId = GLib.idle_add(GLib.PRIORITY_LOW, () => {
+            handle.restoreIdleId = 0;
+
             if (handle.isRestoreApplied) return GLib.SOURCE_REMOVE;
 
             // Check if the window still exists
