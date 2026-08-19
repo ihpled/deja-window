@@ -119,13 +119,24 @@ export default class DejaWindowExtension extends Extension {
         // Handle already existing windows (Crucial for X11 and reload)
         // We use an idle callback to ensure the loop starts after full initialization.
         // The id is kept so disable() can drop the source if it never got to run.
+        // Locking the session disables the extension and unlocking enables it again (metadata.json
+        // declares no 'unlock-dialog' session mode), so this walk also runs on every unlock. Restoring
+        // windows that are already placed is wrong there: it re-applies maximized/workspace state and,
+        // since Mutter's make_above()/unmake_above() raise the window, pulls the app to the front of
+        // the stack. After a lock the still-open windows are re-adopted for saving only.
+        const adoptWithoutRestore = this._disabledByLock === true;
+        this._disabledByLock = false;
+
         this._adoptIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
             this._adoptIdleId = 0;
             // Meta.TabList.NORMAL includes standard managed windows (filters out O-R windows usually)
             const windows = global.display.get_tab_list(Meta.TabList.NORMAL, null);
+            // Read by _setupListeners for the windows adopted in this loop only.
+            this._adoptWithoutRestore = adoptWithoutRestore;
             for (const window of windows) {
                 this._onWindowCreated(window);
             }
+            this._adoptWithoutRestore = false;
             return GLib.SOURCE_REMOVE;
         });
 
@@ -138,6 +149,11 @@ export default class DejaWindowExtension extends Extension {
     }
 
     disable() {
+        // A session lock switches GNOME to the 'unlock-dialog' session mode, which metadata.json does
+        // not declare, so the extension is disabled here and enabled again on unlock. Remember it, so
+        // the adopt walk in the next enable() re-tracks the still-open windows without restoring them.
+        this._disabledByLock = Main.sessionMode.currentMode === 'unlock-dialog';
+
         // Drop the adopt-existing-windows idle source if it is still pending
         if (this._adoptIdleId) {
             GLib.source_remove(this._adoptIdleId);
@@ -591,7 +607,9 @@ export default class DejaWindowExtension extends Extension {
             timeoutId: 0,               // Store timeout ID
             wsTimeoutId: 0,             // Store workspace timeout ID
             restoreIdleId: 0,           // Store the pending restore idle ID
-            isRestoreApplied: false,    // Track if restore has been applied
+            // Track if restore has been applied. Windows re-adopted after a session unlock start
+            // out as already restored: they keep saving, but are never re-placed.
+            isRestoreApplied: this._adoptWithoutRestore === true,
             actors: []                  // Track actors to disconnectObject if window closes
         };
         this._handles.set(window, handle);
@@ -855,7 +873,7 @@ export default class DejaWindowExtension extends Extension {
             if (config.restore_workspace && state.workspace !== undefined && state.workspace !== -1) {
                 const ws = global.workspace_manager.get_workspace_by_index(state.workspace);
                 if (ws) {
-                    window.change_workspace(ws);
+                    if (ws !== window.get_workspace()) window.change_workspace(ws);
 
                     // Switch to desktop if configured
                     if (config.switch_to_workspace && ws !== global.workspace_manager.get_active_workspace()) {
@@ -879,17 +897,21 @@ export default class DejaWindowExtension extends Extension {
             }
 
             // Restore Always on Visible Workspace (Sticky)
-            if (config.restore_sticky && state.sticky !== undefined) {
+            // Each of the three toggles below is applied only when it actually differs from the
+            // window's current state: these Meta calls are not free no-ops. In particular
+            // make_above()/unmake_above() raise the window to the top of the stack, so calling
+            // unmake_above() on a window that is already not above still brings it to the front.
+            if (config.restore_sticky && state.sticky !== undefined && state.sticky !== window.on_all_workspaces) {
                 state.sticky ? window.stick() : window.unstick();
             }
 
             // Restore Always on Top (Above)
-            if (config.restore_above && state.above !== undefined) {
+            if (config.restore_above && state.above !== undefined && state.above !== window.above) {
                 state.above ? window.make_above() : window.unmake_above();
             }
 
             // Restore Minimized
-            if (config.restore_minimized && state.minimized !== undefined) {
+            if (config.restore_minimized && state.minimized !== undefined && state.minimized !== window.minimized) {
                 state.minimized ? window.minimize() : window.unminimize();
             }
 
