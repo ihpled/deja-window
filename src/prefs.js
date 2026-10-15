@@ -169,6 +169,53 @@ export default class DejaWindowPreferences extends ExtensionPreferences {
         indicatorRow.add_suffix(indicatorSwitch);
         indicatorGroup.add(indicatorRow);
 
+        // -- Restore All Section --
+        // One action, three entry points: this button, the top bar indicator's
+        // menu and the shortcut below. The button goes through the
+        // restore-all-request key since prefs runs in its own process.
+        const restoreAllGroup = new Adw.PreferencesGroup({
+            title: 'Restore All Windows',
+            description: 'Put every managed window that is open back to its saved layout, for when temporary moves and resizes have piled up.'
+        });
+        settingsPage.add(restoreAllGroup);
+
+        const restoreAllRow = new Adw.ActionRow({
+            title: 'Restore All Windows Now',
+            subtitle: 'Also available from the top bar icon menu'
+        });
+        const restoreAllButton = new Gtk.Button({
+            label: 'Restore',
+            valign: Gtk.Align.CENTER
+        });
+        restoreAllButton.connect('clicked', () => {
+            settings.set_string('restore-all-request', String(Date.now()));
+        });
+        restoreAllRow.add_suffix(restoreAllButton);
+        restoreAllGroup.add(restoreAllRow);
+
+        // Accelerator typed as GTK spells it (e.g. <Control><Alt>r). Validated
+        // with Gtk.accelerator_parse before it's saved; empty disables the shortcut.
+        const shortcutRow = new Adw.EntryRow({
+            title: 'Shortcut',
+            show_apply_button: true,
+            text: settings.get_strv('restore-all-shortcut')[0] || ''
+        });
+        shortcutRow.connect('apply', () => {
+            const text = shortcutRow.get_text().trim();
+            if (!text) {
+                settings.set_strv('restore-all-shortcut', []);
+                return;
+            }
+            const [ok, key] = Gtk.accelerator_parse(text);
+            if (!ok || key === 0) {
+                shortcutRow.add_css_class('error');
+                return;
+            }
+            shortcutRow.remove_css_class('error');
+            settings.set_strv('restore-all-shortcut', [text]);
+        });
+        restoreAllGroup.add(shortcutRow);
+
         // -- Backup & Restore Section --
         // Exports/imports the user-defined rules (window-app-configs) and the
         // Global Defaults (window-global-defaults) as a single JSON file.

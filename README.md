@@ -20,6 +20,7 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
 * **Multi-Monitor Support**: Automatically detects and restores windows to the exact monitor they were previously saved on.
 * **Layout Locking**: Freeze a window's saved layout to maintain your perfect configuration, preventing accidental updates when temporarily moving or resizing windows.
 * **Smart Centering**: Automatically centers windows that are configured but haven't been saved yet.  
+* **Restore All Windows**: Put every managed window back to its saved layout in one go, from the top bar icon menu, a keyboard shortcut (default Ctrl+Alt+R) or a button in Preferences. Pairs with Layout Locking: lock the rules, move things around freely, then restore all when the layout has drifted.
 * **Global Defaults (Experimental)**: Optionally manage every normal window that doesn't already have its own rule, with independent restore toggles and its own exclude list for apps that should never be touched by it.
 * **Window Menu Rule Editor**: Right-click a window's title bar (or press Super+Space) for a "Deja Window" submenu holding the window's whole rule as switches — match by class or title, every restore option, lock, exclude — so it can be configured on the spot, without opening Preferences.
 * **Non-Destructive Rule Toggling**: Turn a rule off — from Preferences or from the window menu — without deleting it. Its customization is kept and restored the moment you turn it back on.
@@ -45,7 +46,7 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
    \# Copy files    
    cp \-r \* \~/.local/share/gnome-shell/extensions/deja-window@mcast.gnomext.com/
 
-4. Log out and log back in (or restart GNOME Shell on X11 with Alt+F2, then r).  
+4. Log out and log back in (or restart GNOME Shell on X11 with Alt+F2, then r). If an older copy of the extension is already enabled, disable it before copying the files: replacing `schemas/gschemas.compiled` under a running extension aborts GNOME Shell on Wayland.  
 5. Enable the extension using **GNOME Extensions** or **Extension Manager**.
 
 ## **⚙️ Configuration**
@@ -86,6 +87,8 @@ Rules applied automatically to every *normal* window that doesn't already match 
 
 ### **Settings tab**
 
+* **Restore All Windows Now**: Re-applies the saved layout of every managed window that is currently open, exactly as if each had just been opened. Windows with a rule but no saved state yet are centered. The same action is in the top bar icon menu.
+* **Shortcut**: Keyboard shortcut for the same action, spelled the GTK way (default `<Control><Alt>r`). Clear it to disable the shortcut.
 * **Enabled**: The master switch for Deja Window. When off, the extension stays installed and active but all window tracking, restoring and saving is bypassed.
 * **Show Icon in Top Bar**: Adds an indicator to the top bar with quick access to Preferences and to the Enabled switch above.
 
