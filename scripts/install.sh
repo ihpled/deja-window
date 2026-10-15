@@ -20,6 +20,20 @@ fi
 
 echo "🚧 Building and Installing Gnomelets Extension..."
 
+# Installing over a copy that GNOME Shell is running right now is not safe on
+# Wayland: glib-compile-schemas rewrites schemas/gschemas.compiled, which the
+# running extension has memory-mapped, and its next settings lookup aborts the
+# whole shell (SIGABRT in g_settings_get_value, session ends). Disable the
+# extension first, or install right before logging out.
+if [ "$ZIP_MODE" = false ] && [ -d "$INSTALL_DIR" ] && command -v gnome-extensions >/dev/null 2>&1 \
+   && gnome-extensions info "$UUID" 2>/dev/null | grep -q "State: ACTIVE"; then
+    echo "⚠️  $UUID is ACTIVE in the running GNOME Shell."
+    echo "    Replacing its schema now can crash the shell. Disable it first:"
+    echo "      gnome-extensions disable $UUID"
+    echo "    then re-run this script and log out/in."
+    exit 1
+fi
+
 # 1. Compile Schemas
 echo "⚙️ Compiling schemas..."
 glib-compile-schemas "$SRC_DIR/schemas/"

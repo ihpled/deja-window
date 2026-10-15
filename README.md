@@ -46,7 +46,7 @@ In "vanilla" GNOME, windows typically open in the current workspace either cente
    \# Copy files    
    cp \-r \* \~/.local/share/gnome-shell/extensions/deja-window@mcast.gnomext.com/
 
-4. Log out and log back in (or restart GNOME Shell on X11 with Alt+F2, then r).  
+4. Log out and log back in (or restart GNOME Shell on X11 with Alt+F2, then r). If an older copy of the extension is already enabled, disable it before copying the files: replacing `schemas/gschemas.compiled` under a running extension aborts GNOME Shell on Wayland.  
 5. Enable the extension using **GNOME Extensions** or **Extension Manager**.
 
 ## **⚙️ Configuration**
