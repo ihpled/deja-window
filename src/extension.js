@@ -825,7 +825,18 @@ export default class DejaWindowExtension extends Extension {
 
             // Before we can determine the work area, we need to make sure the window is located on the correct monitor.
             // So, if we are restoring position, then check and move to the saved monitor.
-            const targetMonitor = state.monitor ?? 0;
+            let targetMonitor = state.monitor ?? 0;
+            // Monitor indices are not stable: Mutter renumbers logical monitors whenever the monitor
+            // configuration changes (docking, lid, resume), so a saved index can end up pointing at a
+            // different screen than the saved coordinates. The coordinates are absolute stage coordinates
+            // and stay meaningful, so derive the monitor from them and keep the saved index only as a
+            // fallback for coordinates that no longer lie on any connected monitor. Skipped for windows
+            // saved maximized: their x/y are left over from before maximizing and may belong to another
+            // monitor than the one they were maximized on.
+            if (config.restore_pos && !state.maximized && state.x !== undefined && state.y !== undefined) {
+                const monitorFromRect = this._findMonitorForRect(state.x, state.y, targetW, targetH);
+                if (monitorFromRect !== -1) targetMonitor = monitorFromRect;
+            }
             // The saved monitor index may no longer exist (monitor unplugged, layout changed since last save).
             // Passing an out-of-range index to move_to_monitor() hits a fatal assertion in Mutter and crashes
             // the whole gnome-shell process, so it must be validated against the currently connected monitors.
@@ -1041,6 +1052,34 @@ export default class DejaWindowExtension extends Extension {
             x <= (area.x + area.width - 50) &&
             y >= area.y - 50 &&
             y <= (area.y + area.height - 50);
+    }
+
+    // Returns the index of the monitor a rectangle in stage coordinates belongs to, using the same
+    // rule as Mutter: the monitor containing the rectangle's center, otherwise the one with the
+    // largest overlap. Unlike global.display.get_monitor_index_for_rect(), which falls back to the
+    // primary monitor, it returns -1 when the rectangle doesn't touch any connected monitor.
+    _findMonitorForRect(x, y, width, height) {
+        const centerX = x + Math.floor(width / 2);
+        const centerY = y + Math.floor(height / 2);
+        let bestIndex = -1;
+        let bestArea = 0;
+
+        for (let i = 0; i < global.display.get_n_monitors(); i++) {
+            const geo = global.display.get_monitor_geometry(i);
+
+            if (centerX >= geo.x && centerX < geo.x + geo.width &&
+                centerY >= geo.y && centerY < geo.y + geo.height)
+                return i;
+
+            const overlapW = Math.min(x + width, geo.x + geo.width) - Math.max(x, geo.x);
+            const overlapH = Math.min(y + height, geo.y + geo.height) - Math.max(y, geo.y);
+            if (overlapW > 0 && overlapH > 0 && overlapW * overlapH > bestArea) {
+                bestIndex = i;
+                bestArea = overlapW * overlapH;
+            }
+        }
+
+        return bestIndex;
     }
 
     // Helper to find a free position for the window to avoid overlap
