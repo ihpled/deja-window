@@ -825,11 +825,16 @@ export default class DejaWindowExtension extends Extension {
 
             // Before we can determine the work area, we need to make sure the window is located on the correct monitor.
             // So, if we are restoring position, then check and move to the saved monitor.
-            const targetMonitor = state.monitor ?? 0;
+            // With nothing saved yet, leave the window on the monitor Mutter picked (the one with the
+            // pointer/focus): index 0 is not the primary monitor, just the first logical monitor in
+            // Mutter's ordering, so defaulting to it sends every new app to that screen. States
+            // written before the monitor was always saved omitted it when it was 0, so a saved
+            // position without a monitor still means monitor 0.
+            const targetMonitor = state.monitor ?? (state.x !== undefined ? 0 : undefined);
             // The saved monitor index may no longer exist (monitor unplugged, layout changed since last save).
             // Passing an out-of-range index to move_to_monitor() hits a fatal assertion in Mutter and crashes
             // the whole gnome-shell process, so it must be validated against the currently connected monitors.
-            if (config.restore_pos && targetMonitor !== window.get_monitor() &&
+            if (config.restore_pos && targetMonitor !== undefined && targetMonitor !== window.get_monitor() &&
                 targetMonitor >= 0 && targetMonitor < global.display.get_n_monitors()) {
               // Restore (move) the window to the saved monitor
               window.move_to_monitor(targetMonitor);
@@ -979,9 +984,9 @@ export default class DejaWindowExtension extends Extension {
             changed = true;
         }
 
-        // If we are restoring position and the monitor is different, then save the new monitor
-        if (config.restore_pos
-              && (monitorIndex !== 0 || savedStates[identity].monitor !== undefined)
+        // If we are restoring position and the monitor is different, then save the new monitor.
+        // Always written, 0 included: restore reads a missing monitor as "no preference".
+        if (config.restore_pos && monitorIndex >= 0
               && savedStates[identity].monitor !== monitorIndex) {
             savedStates[identity].monitor = monitorIndex;
             changed = true;
