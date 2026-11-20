@@ -1,6 +1,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -104,6 +105,17 @@ export default class DejaWindowExtension extends Extension {
             this._handleCaptureRequest();
         }, this);
 
+        // One-shot "restore all windows" requests from prefs.js (its button) and
+        // the keyboard shortcut for the same action. See restoreAllWindows.
+        this._settings.connectObject('changed::restore-all-request', () => {
+            if (!this._settings.get_string('restore-all-request')) return;
+            this._settings.set_string('restore-all-request', '');
+            this.restoreAllWindows();
+        }, this);
+        Main.wm.addKeybinding('restore-all-shortcut', this._settings,
+            Meta.KeyBindingFlags.NONE, Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this.restoreAllWindows());
+
         // Top bar indicator, shown/hidden per the show-indicator preference
         this._indicator = null;
         this._settings.connectObject('changed::show-indicator', () => {
@@ -165,6 +177,8 @@ export default class DejaWindowExtension extends Extension {
             this._windowMenu = null;
         }
 
+        Main.wm.removeKeybinding('restore-all-shortcut');
+
         // Clean up global signals associated with this extension
         if (this._settings) {
             this._settings.disconnectObject(this);
@@ -219,6 +233,12 @@ export default class DejaWindowExtension extends Extension {
         const settingsItem = new PopupMenu.PopupMenuItem('Deja Window Settings');
         settingsItem.connect('activate', () => this.openPreferences());
         indicator.menu.addMenuItem(settingsItem);
+
+        // Puts every managed window back where its rule says, for layouts that
+        // drifted through temporary moves and resizes. Same as the shortcut.
+        const restoreAllItem = new PopupMenu.PopupMenuItem('Restore All Windows Now');
+        restoreAllItem.connect('activate', () => this.restoreAllWindows());
+        indicator.menu.addMenuItem(restoreAllItem);
 
         indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -433,6 +453,35 @@ export default class DejaWindowExtension extends Extension {
             .find(w => this._isValidManagedWindow(w) && this._windowMatchesConfig(config, w));
 
         reply(this.captureWindowState(window, config.wm_class) ? 'saved' : 'no-window');
+    }
+
+    // Re-applies the saved layout of every managed window that is open right
+    // now, as if each had just been opened: restore normally runs once per
+    // window (guarded by isRestoreApplied), so the guard is reset first.
+    // Windows whose rule has no saved state yet are centered, as on open.
+    // Triggered by the indicator menu, the restore-all-shortcut keybinding and
+    // the restore-all-request key (prefs.js). Returns how many were restored.
+    restoreAllWindows() {
+        if (!this._functionalityEnabled) return 0;
+
+        let count = 0;
+        for (const [window, handle] of this._handles) {
+            if (!window || !window.get_workspace()) continue;
+            if (!this._isValidManagedWindow(window)) continue;
+
+            const effective = this._getEffectiveConfig(window);
+            if (!effective) continue;
+
+            // A restore already scheduled (window still opening) will run anyway.
+            if (handle.restoreIdleId) continue;
+
+            handle.isRestoreApplied = false;
+            this._applySavedState(window, effective.identity, effective.config);
+            count++;
+        }
+
+        debug(`[DejaWindow] Restore all: ${count} window(s)`);
+        return count;
     }
 
     // Snapshots a specific window's current geometry/state into

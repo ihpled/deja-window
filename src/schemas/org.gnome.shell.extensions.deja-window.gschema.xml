@@ -91,5 +91,23 @@
       <description>JSON object of restore_* flags applied to any NORMAL window without its own per-app config, plus an excluded_apps list of rules like {"wm_class": pattern, "match_mode": "wm_class"|"title", "is_regex": bool}.</description>
     </key>
 
+    <!-- One-shot request written by prefs.js ("Restore all windows now" button):
+         the extension re-applies every managed window's saved layout, exactly as
+         if each had just been opened. Any non-empty value triggers it; the
+         extension clears the key afterwards. -->
+    <key name="restore-all-request" type="s">
+      <default>''</default>
+      <summary>Pending "restore all windows" request</summary>
+      <description>Set to any non-empty string to make the extension re-apply the saved layout of every managed window that is currently open.</description>
+    </key>
+
+    <!-- Keyboard shortcut for the same action, so a drifted layout can be put
+         back without opening a menu. Empty array disables it. -->
+    <key name="restore-all-shortcut" type="as">
+      <default><![CDATA[['<Control><Alt>r']]]></default>
+      <summary>Restore all windows shortcut</summary>
+      <description>Keyboard shortcut that re-applies the saved layout of every managed window.</description>
+    </key>
+
   </schema>
 </schemalist>
