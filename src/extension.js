@@ -40,6 +40,17 @@ function maximizeArgs(method) {
     return typeof method === 'function' && method.length > 0 ? [MAXIMIZE_BOTH] : [];
 }
 
+function isFullyMaximized(window) {
+    if (typeof window.is_maximized === 'function') return window.is_maximized();
+    return window.maximized_horizontally && window.maximized_vertically;
+}
+
+function restoresOnlyMaximized(config) {
+    return config.restore_maximized && !config.restore_size && !config.restore_pos &&
+        !config.restore_workspace && !config.restore_minimized &&
+        !config.restore_above && !config.restore_sticky;
+}
+
 /**
  * DejaWindowExtension Class
  * The main class for the "Deja Window" extension.
@@ -705,7 +716,8 @@ export default class DejaWindowExtension extends Extension {
             // Schedule a timeout to save the window's state
             handle.timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                 debug('[DejaWindow] Window changed (debounced):', identity);
-                const isMaximized = window.maximized_horizontally || window.maximized_vertically;
+                const isMaximized = restoresOnlyMaximized(effective.config)
+                    ? isFullyMaximized(window) : window.maximized_horizontally || window.maximized_vertically;
 
                 // Get additional states
                 const workspace = window.get_workspace();
@@ -726,8 +738,6 @@ export default class DejaWindowExtension extends Extension {
             // Last save before closing (skipped while bypassed)
             if (this._functionalityEnabled && handle.isRestoreApplied) {
                 const rect = window.get_frame_rect();
-                const isMaximized = window.maximized_horizontally || window.maximized_vertically;
-
                 // Get additional states
                 const workspace = window.get_workspace();
                 const workspaceIndex = workspace ? workspace.index() : -1;
@@ -736,6 +746,8 @@ export default class DejaWindowExtension extends Extension {
                 const effective = this._getEffectiveConfig(window);
 
                 if (effective && effective.config.locked !== true) {
+                    const isMaximized = restoresOnlyMaximized(effective.config)
+                        ? isFullyMaximized(window) : window.maximized_horizontally || window.maximized_vertically;
                     this._performSave(effective.identity, monitorIndex, rect.x, rect.y, rect.width, rect.height,
                         effective.config, isMaximized, workspaceIndex, window.minimized, window.above, window.on_all_workspaces);
                 }
@@ -777,9 +789,12 @@ export default class DejaWindowExtension extends Extension {
             // Final Safety Check: Avoid Override Redirect windows
             if (window.is_override_redirect()) return GLib.SOURCE_REMOVE;
 
-            // Double check actor mapping just to be absolutely sure
+            // A mapped signal already scheduled this callback. During a Shell
+            // animation the actor can become temporarily unmapped again. A
+            // maximize request does not depend on the actor's current geometry.
+            const onlyMaximized = restoresOnlyMaximized(config);
             const actor = window.get_compositor_private();
-            if (!actor || !actor.mapped) {
+            if (!actor || (!actor.mapped && !onlyMaximized)) {
                 debug(`[DejaWindow] Window ${identity} actor not ready in idle, skipping...`);
                 return GLib.SOURCE_REMOVE;
             }
@@ -810,6 +825,17 @@ export default class DejaWindowExtension extends Extension {
             debug('[DejaWindow] Restoring state for:', identity, state);
             // Safety checks for X11
             if (!state) return GLib.SOURCE_REMOVE;
+
+            // A maximized-only rule should use the app's normal size and position.
+            if (onlyMaximized) {
+                const isMaximized = isFullyMaximized(window);
+                if (state.maximized === true && !isMaximized && window.can_maximize()) {
+                    this._maximizeWindow(window);
+                } else if (state.maximized === false && isMaximized) {
+                    this._unmaximizeWindow(window);
+                }
+                return GLib.SOURCE_REMOVE;
+            }
 
             const rect = window.get_frame_rect();
 
